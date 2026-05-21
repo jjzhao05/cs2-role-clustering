@@ -9,7 +9,7 @@ DEMOS_DIR = Path(r"C:\Users\Jonathan Zhao\Documents\GitHub\cs2-role-classifier\d
 MAX_FILE_AGE_HOURS = 6
 
 # change this if your 7-Zip is installed elsewhere
-SEVEN_ZIP = Path(r"C:\Program Files\7-Zip\7z.exe")
+SEVEN_ZIP = Path(r"C:\Program Files\7-Zip\7z.exe") 
 
 
 def ensure_dir(path: Path):

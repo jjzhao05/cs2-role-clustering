@@ -11,7 +11,7 @@ import hdbscan
 
 INPUT_PATH = "output.csv"
 OUTPUT_DIR = Path("outputs")
-MIN_ROUNDS_PLAYED = 26
+GROUND_TRUTH_PATH = Path("liquipedia_player_roles.csv")
 K_VALUES = [3, 4, 5, 6, 7, 8]
 RANDOM_STATE = 69420
 
@@ -19,8 +19,9 @@ RANDOM_STATE = 69420
 CLUSTER_EXCLUDE_FEATURES = {"adr", "kpr"}
 
 # HDBSCAN hyperparameter grid
-HDBSCAN_MIN_CLUSTER_SIZES = [3, 5, 10, 15]
-HDBSCAN_MIN_SAMPLES = [1, 3, 5]
+HDBSCAN_MIN_CLUSTER_SIZES = [2, 3, 4, 5, 6, 8, 10, 12, 15]
+HDBSCAN_MIN_SAMPLES = [1, 2, 3, 4, 5]
+HDBSCAN_MAX_NOISE_FRACTION = 0.30  # discard configs noisier than this
 
 # Stability analysis config
 STABILITY_N_BOOTS = 50       # bootstrap iterations per model
@@ -39,10 +40,134 @@ def load_data():
         raise ValueError(f"Missing required columns: {sorted(missing)}")
     df["side"] = df["side"].str.lower()
     df = df[df["side"].isin(["ct", "t"])]
-    df = df[df["rounds_played"] > MIN_ROUNDS_PLAYED].copy()
     if df.empty:
         raise ValueError("No rows left after filtering.")
     return df
+
+
+
+
+def load_ground_truth() -> pd.DataFrame | None:
+    """
+    Load Liquipedia ground-truth roles.  Returns a DataFrame with columns
+    [player_page, role_1, role_2] or None if the file is missing.
+    """
+    if not GROUND_TRUTH_PATH.exists():
+        print(f"[info] ground-truth file not found at {GROUND_TRUTH_PATH} — skipping GT comparison")
+        return None
+    gt = pd.read_csv(GROUND_TRUTH_PATH).fillna("")
+    gt.columns = gt.columns.str.strip()
+    # Normalise the join key: lowercase, strip whitespace
+    gt["_key"] = gt["player_page"].str.lower().str.strip()
+    return gt
+
+
+def match_ground_truth(players_df: pd.DataFrame, gt: pd.DataFrame) -> pd.DataFrame:
+    """
+    Left-join *players_df* (which has a 'player_name' column) against *gt*.
+    Returns *players_df* with 'gt_role_1' and 'gt_role_2' columns appended.
+    Unmatched players get empty strings.
+    """
+    tmp = players_df.copy()
+    tmp["_key"] = tmp["player_name"].str.lower().str.strip()
+    merged = tmp.merge(
+        gt[["_key", "role_1", "role_2"]].rename(
+            columns={"role_1": "gt_role_1", "role_2": "gt_role_2"}
+        ),
+        on="_key",
+        how="left",
+    ).drop(columns=["_key"])
+    merged[["gt_role_1", "gt_role_2"]] = merged[["gt_role_1", "gt_role_2"]].fillna("")
+    return merged
+
+
+def _is_valid_role(role: str) -> bool:
+    """True if the role string is a meaningful, known role."""
+    return role.strip().lower() not in ("", "unknown")
+
+
+def resolve_gt_label(players_df: pd.DataFrame, labels: np.ndarray) -> pd.Series:
+    """
+    For each player, pick whichever of their two GT roles best represents the
+    majority role of their cluster — so role_1 and role_2 are treated equally.
+
+    Algorithm (per player):
+      1. Find the majority role of the player's cluster (counting all valid
+         role_1 and role_2 values from every player in that cluster).
+      2. If the player's role_1 matches the majority → use role_1.
+         Elif role_2 matches → use role_2.
+         Else → use role_1 as the fallback (keeps behaviour deterministic).
+
+    Players with no valid role in either column get "" and are excluded from
+    the ARI computation downstream.
+    """
+    df = players_df.copy()
+    df["_label"] = labels
+
+    # Build cluster → majority role mapping using both columns with equal weight
+    role_counts: dict[int, pd.Series] = {}
+    for cluster_id, group in df[df["_label"] != -1].groupby("_label"):
+        counts: dict[str, int] = {}
+        for col in ("gt_role_1", "gt_role_2"):
+            if col not in group.columns:
+                continue
+            for role in group[col]:
+                if _is_valid_role(role):
+                    counts[role] = counts.get(role, 0) + 1
+        role_counts[cluster_id] = pd.Series(counts)
+
+    def pick_role(row) -> str:
+        cid = row["_label"]
+        if cid == -1:
+            return ""
+        majority = role_counts.get(cid, pd.Series(dtype=int))
+        if majority.empty:
+            return ""
+        top_role = majority.idxmax()
+        r1 = row.get("gt_role_1", "")
+        r2 = row.get("gt_role_2", "")
+        if r1.strip().lower() == top_role.strip().lower() and _is_valid_role(r1):
+            return r1
+        if r2.strip().lower() == top_role.strip().lower() and _is_valid_role(r2):
+            return r2
+        # Neither role matches the cluster majority — fall back to whichever
+        # valid role exists (prefer role_1 for stability)
+        return r1 if _is_valid_role(r1) else (r2 if _is_valid_role(r2) else "")
+
+    return df.apply(pick_role, axis=1)
+
+
+def ground_truth_ari(labels: np.ndarray, players_df: pd.DataFrame) -> float | None:
+    """
+    Compute Adjusted Rand Index between cluster labels and ground-truth roles.
+
+    Both role_1 and role_2 are treated equally: each player's effective GT
+    label is whichever of their two roles best aligns with their cluster's
+    majority role (see resolve_gt_label).  This means a dual-role player like
+    an IGL/Rifler gets credit whether the cluster captures their IGL side or
+    their Rifler side — neither column is privileged.
+    """
+    if "gt_role_1" not in players_df.columns:
+        return None
+
+    resolved = resolve_gt_label(players_df, labels)
+
+    mask = (
+        (labels != -1) &
+        resolved.str.strip().str.len().gt(0) &
+        resolved.str.strip().str.lower().ne("unknown")
+    )
+    if mask.sum() < 2:
+        return None
+
+    roles = resolved[mask]
+    if roles.nunique() < 2:
+        return None
+
+    from sklearn.preprocessing import LabelEncoder
+    le = LabelEncoder()
+    gt_encoded = le.fit_transform(roles)
+    return float(adjusted_rand_score(gt_encoded, labels[mask]))
 
 
 def get_features(df):
@@ -211,7 +336,7 @@ def composite_score(silhouette: float, davies_bouldin: float,
 # Main clustering routine
 # ---------------------------------------------------------------------------
 
-def cluster_side(df, side):
+def cluster_side(df, side, gt: pd.DataFrame | None = None):
     side_df = df[df["side"] == side].reset_index(drop=True)
     if len(side_df) < 3:
         print(f"Skipping {side}: not enough players.")
@@ -299,6 +424,10 @@ def cluster_side(df, side):
             noise_mask = labels != -1
             noise_pct = (~noise_mask).mean()
 
+            if noise_pct > HDBSCAN_MAX_NOISE_FRACTION:
+                print(f"  [skip] {name} — {noise_pct:.0%} noise exceeds {HDBSCAN_MAX_NOISE_FRACTION:.0%} cap")
+                continue
+
             if noise_mask.sum() < 2 or len(set(labels[noise_mask])) < 2:
                 continue
 
@@ -368,6 +497,14 @@ def cluster_side(df, side):
             output["cluster"] = labels
             output["pc1"] = coords[:, 0]
             output["pc2"] = coords[:, 1]
+            # --- Ground truth join ---
+            if gt is not None:
+                output = match_ground_truth(output, gt)
+                gt_ari = ground_truth_ari(labels, output)
+                if gt_ari is not None:
+                    print(f"  GT ARI ({name}): {gt_ari:.4f}")
+                    # Persist ARI into the results table for downstream use
+                    results_df.loc[results_df["name"] == name, "gt_ari"] = gt_ari
             output.to_csv(side_dir / f"{name}_player_clusters.csv", index=False)
 
     # --- Console summary ---
@@ -436,8 +573,9 @@ def _print_stability_interpretation(results_df: pd.DataFrame) -> None:
 def main():
     OUTPUT_DIR.mkdir(exist_ok=True)
     df = load_data()
-    cluster_side(df, "ct")
-    cluster_side(df, "t")
+    gt = load_ground_truth()
+    cluster_side(df, "ct", gt=gt)
+    cluster_side(df, "t", gt=gt)
     print(f"\nSaved outputs to: {OUTPUT_DIR}")
 
 

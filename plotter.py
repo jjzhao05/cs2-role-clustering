@@ -4,6 +4,20 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+# ---------------------------------------------------------------------------
+# Global font sizes — scaled up for report-quality output
+# ---------------------------------------------------------------------------
+plt.rcParams.update({
+    "font.size":        14,
+    "axes.titlesize":   16,
+    "axes.labelsize":   14,
+    "xtick.labelsize":  12,
+    "ytick.labelsize":  12,
+    "legend.fontsize":  12,
+    "legend.title_fontsize": 13,
+    "figure.titlesize": 17,
+})
+
 INPUT_DIR = Path("outputs")
 PLOTS_DIR = Path("plots")
 SIDES = ["ct", "t"]
@@ -123,7 +137,7 @@ def plot_pca_scatter(players: pd.DataFrame, method_name: str, output_dir: Path) 
         ax.annotate(
             row["player_name"],
             (row["pc1"], row["pc2"]),
-            fontsize=7,
+            fontsize=11,
             xytext=(4, 4),
             textcoords="offset points",
         )
@@ -199,10 +213,10 @@ def _make_radar(ax, values, categories, title):
     ax.set_xticks(angles[:-1])
     ax.set_xticklabels(
         [c.replace("_", "\n") for c in categories],
-        fontsize=8,
+        fontsize=12,
     )
     ax.set_yticklabels([])
-    ax.set_title(title, y=1.12, fontsize=10)
+    ax.set_title(title, y=1.12, fontsize=13)
 
 
 def plot_radar(summary: pd.DataFrame, method_name: str, output_dir: Path) -> None:
@@ -249,7 +263,7 @@ def plot_radar(summary: pd.DataFrame, method_name: str, output_dir: Path) -> Non
     for j in range(i + 1, len(axes)):
         fig.delaxes(axes[j])
 
-    fig.suptitle(f"Cluster Profiles — {method_name}", fontsize=12, y=1.01)
+    fig.suptitle(f"Cluster Profiles — {method_name}", fontsize=16, y=1.01)
     plt.tight_layout()
     out = output_dir / f"{method_name}_radar.png"
     plt.savefig(out, dpi=200, bbox_inches="tight")
@@ -272,7 +286,7 @@ def plot_stability_bar(side: str, output_dir: Path) -> None:
 
     df = df.sort_values("stability_mean", ascending=True)
 
-    method_colors = {"kmeans": "#4C72B0", "gmm": "#DD8452", "hdbscan": "#55A868"}
+    method_colors = {"kmeans": "#4C72B0", "gmm": "#DD8452"}
     colors = [method_colors.get(m, "#888888") for m in df["method"]]
 
     fig, ax = plt.subplots(figsize=(10, max(4, len(df) * 0.35)))
@@ -283,13 +297,13 @@ def plot_stability_bar(side: str, output_dir: Path) -> None:
     ax.set_xlabel("Mean ARI (± 1 std)")
     ax.set_title(f"Bootstrap Stability — {side.upper()}")
     ax.set_xlim(0, 1.05)
-    ax.legend(fontsize=8)
+    ax.legend(fontsize=12)
 
     # Legend for algorithm colours
     from matplotlib.patches import Patch
     legend_handles = [Patch(color=c, label=m) for m, c in method_colors.items()]
     ax.legend(handles=legend_handles + ax.get_legend_handles_labels()[0][-2:],
-              fontsize=8, loc="lower right")
+              fontsize=12, loc="lower right")
 
     plt.tight_layout()
     out = output_dir / f"{side}_stability_bar.png"
@@ -310,16 +324,8 @@ def plot_silhouette_vs_k(side: str, output_dir: Path) -> None:
     fig, ax = plt.subplots(figsize=(9, 5))
 
     for method, group in df.groupby("method"):
-        if method == "hdbscan":
-            continue  # k is emergent for HDBSCAN — not meaningful to plot vs fixed k
         sub = group.sort_values("k")
         ax.plot(sub["k"], sub["silhouette"], marker="o", label=method)
-
-    hdb = df[df["method"] == "hdbscan"]
-    if not hdb.empty:
-        best_hdb_sil = hdb["silhouette"].max()
-        ax.axhline(y=best_hdb_sil, linestyle="--", linewidth=1.5,
-                   label=f"HDBSCAN best ({best_hdb_sil:.3f})")
 
     ax.set_xlabel("k")
     ax.set_ylabel("Silhouette Score")
@@ -434,9 +440,9 @@ def plot_zscore_heatmap(
                    vmin=-vmax, vmax=vmax)
 
     ax.set_xticks(range(len(z_plot.columns)))
-    ax.set_xticklabels([f"Cluster {c}" for c in z_plot.columns], fontsize=10)
+    ax.set_xticklabels([f"Cluster {c}" for c in z_plot.columns], fontsize=13)
     ax.set_yticks(range(len(z_plot.index)))
-    ax.set_yticklabels(z_plot.index, fontsize=8)
+    ax.set_yticklabels(z_plot.index, fontsize=12)
 
     # Annotate each cell with the z value
     for row_i, feat in enumerate(z_plot.index):
@@ -444,7 +450,7 @@ def plot_zscore_heatmap(
             val = z_plot.loc[feat, clust]
             if pd.notna(val):
                 ax.text(col_i, row_i, f"{val:+.2f}", ha="center", va="center",
-                        fontsize=7, color="black" if abs(val) < 1.5 else "white")
+                        fontsize=11, color="black" if abs(val) < 1.5 else "white")
 
     plt.colorbar(im, ax=ax, label="Z-score (std devs from population mean)")
     ax.set_title(f"Feature Z-scores by Cluster — {method_name}\n"
@@ -455,6 +461,183 @@ def plot_zscore_heatmap(
     plt.close()
     print(f"[ok] {out}")
 
+
+
+
+# ---------------------------------------------------------------------------
+# Ground-truth comparison plots
+# ---------------------------------------------------------------------------
+def _is_valid_role(role: str) -> bool:
+    return str(role).strip().lower() not in ("", "unknown", "nan")
+
+
+def resolve_gt_label_for_plot(players: pd.DataFrame) -> pd.Series:
+    """
+    Mirror of cluster_players.resolve_gt_label — pick whichever of a player's
+    two GT roles best matches their cluster's majority, so both roles are
+    equally weighted when colouring and cross-tabulating.
+    """
+    from collections import Counter
+    role_majority: dict[int, str] = {}
+    non_noise = players[players["cluster"] != -1]
+    for cid, group in non_noise.groupby("cluster"):
+        counts: Counter = Counter()
+        for col in ("gt_role_1", "gt_role_2"):
+            if col not in group.columns:
+                continue
+            for r in group[col]:
+                if _is_valid_role(r):
+                    counts[r] += 1
+        role_majority[cid] = counts.most_common(1)[0][0] if counts else ""
+
+    def pick(row):
+        cid = row.get("cluster", -1)
+        if cid == -1:
+            return ""
+        top = role_majority.get(cid, "")
+        r1 = str(row.get("gt_role_1", ""))
+        r2 = str(row.get("gt_role_2", ""))
+        if r1.strip().lower() == top.strip().lower() and _is_valid_role(r1):
+            return r1
+        if r2.strip().lower() == top.strip().lower() and _is_valid_role(r2):
+            return r2
+        return r1 if _is_valid_role(r1) else (r2 if _is_valid_role(r2) else "")
+
+    return players.apply(pick, axis=1)
+
+
+
+GT_ROLE_COLORS = {
+    "AWPer":         "#e63946",
+    "IGL":           "#457b9d",
+    "Entry Fragger": "#f4a261",
+    "Lurker":        "#2a9d8f",
+    "Rifler":        "#a8dadc",
+    "Coach":         "#6d6875",
+    "Analyst":       "#6d6875",
+    "Caster":        "#6d6875",
+    "Unknown":       "#cccccc",
+    "":              "#cccccc",
+}
+
+
+def plot_pca_gt_roles(players: pd.DataFrame, method_name: str, output_dir: Path) -> None:
+    """
+    PCA scatter coloured by Liquipedia ground-truth role_1 instead of cluster.
+    Cluster boundaries are drawn as faint convex hulls so you can see alignment.
+    """
+    required = {"player_name", "pc1", "pc2", "cluster", "gt_role_1"}
+    if not required.issubset(players.columns):
+        missing = required - set(players.columns)
+        print(f"[skip] {method_name} GT scatter — missing: {sorted(missing)}")
+        return
+
+    non_noise = players[players["cluster"] != -1].copy()
+    if non_noise.empty:
+        return
+
+    fig, ax = plt.subplots(figsize=(14, 10))
+
+    # Draw faint cluster convex hulls
+    from matplotlib.patches import Polygon as MplPolygon
+    from scipy.spatial import ConvexHull
+    cluster_ids = sorted(non_noise["cluster"].unique())
+    hull_colors = plt.cm.tab10(np.linspace(0, 1, max(len(cluster_ids), 1)))
+    for ci, cid in enumerate(cluster_ids):
+        pts = non_noise[non_noise["cluster"] == cid][["pc1", "pc2"]].values
+        if len(pts) < 3:
+            continue
+        try:
+            hull = ConvexHull(pts)
+            poly = MplPolygon(pts[hull.vertices], closed=True,
+                              facecolor=hull_colors[ci], alpha=0.08,
+                              edgecolor=hull_colors[ci], linewidth=1.2,
+                              linestyle="--", label=f"Cluster {cid} boundary")
+            ax.add_patch(poly)
+        except Exception:
+            pass
+
+    # Scatter coloured by GT role
+    non_noise = non_noise.copy()
+    non_noise["_gt_resolved"] = resolve_gt_label_for_plot(non_noise)
+    for role, group in non_noise.groupby("_gt_resolved", sort=False):
+        color = GT_ROLE_COLORS.get(role, "#888888")
+        ax.scatter(group["pc1"], group["pc2"],
+                   color=color, s=90, zorder=3, label=role, edgecolors="white", linewidths=0.5)
+
+    # Noise players in grey
+    noise = players[players["cluster"] == -1]
+    if not noise.empty:
+        ax.scatter(noise["pc1"], noise["pc2"], s=120, marker="x",
+                   linewidths=2, color="grey", label="Noise", zorder=4)
+
+    for _, row in players.iterrows():
+        ax.annotate(row["player_name"], (row["pc1"], row["pc2"]),
+                    fontsize=11, xytext=(4, 4), textcoords="offset points")
+
+    ax.set_xlabel("PC1")
+    ax.set_ylabel("PC2")
+    ax.set_title(f"PCA — Ground-Truth Roles vs Cluster Boundaries\n{method_name}")
+    ax.legend(title="GT Role", bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=12)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    out = output_dir / f"{method_name}_pca_gt_roles.png"
+    plt.savefig(out, dpi=200, bbox_inches="tight")
+    plt.close()
+    print(f"[ok] {out}")
+
+
+def plot_cluster_role_heatmap(players: pd.DataFrame, method_name: str, output_dir: Path) -> None:
+    """
+    Heatmap: rows = clusters, columns = GT role_1.
+    Cell values = player count; cells are also row-normalised (% of cluster)
+    so dominant roles in each cluster stand out even when cluster sizes differ.
+    """
+    required = {"cluster", "gt_role_1"}
+    if not required.issubset(players.columns):
+        print(f"[skip] {method_name} role heatmap — missing GT columns")
+        return
+
+    df = players[players["cluster"] != -1].copy()
+    df["_gt_resolved"] = resolve_gt_label_for_plot(df)
+    df = df[df["_gt_resolved"].apply(_is_valid_role)]
+    if df.empty:
+        print(f"[skip] {method_name} role heatmap — no matched GT players")
+        return
+
+    ct = pd.crosstab(df["cluster"], df["_gt_resolved"])
+    ct_norm = ct.div(ct.sum(axis=1), axis=0)  # row-normalise → fraction per cluster
+
+    fig, axes = plt.subplots(1, 2, figsize=(max(10, len(ct.columns) * 1.6 + 4),
+                                            max(4, len(ct) * 0.8 + 2)))
+
+    for ax, data, fmt, title_suffix in zip(
+        axes,
+        [ct_norm, ct],
+        [".1%", "d"],
+        ["Row % (fraction of cluster)", "Count"],
+    ):
+        im = ax.imshow(data.values, aspect="auto", cmap="YlOrRd", vmin=0)
+        ax.set_xticks(range(len(data.columns)))
+        ax.set_xticklabels(data.columns, rotation=35, ha="right", fontsize=12)
+        ax.set_yticks(range(len(data.index)))
+        ax.set_yticklabels([f"Cluster {c}" for c in data.index], fontsize=12)
+        plt.colorbar(im, ax=ax)
+        ax.set_title(f"{title_suffix}\n{method_name}", fontsize=14)
+
+        for ri in range(data.shape[0]):
+            for ci in range(data.shape[1]):
+                val = data.values[ri, ci]
+                txt = format(val, fmt) if fmt == ".1%" else str(int(val))
+                ax.text(ci, ri, txt, ha="center", va="center",
+                        fontsize=11, color="black" if val < 0.6 else "white")
+
+    plt.suptitle(f"Cluster × Ground-Truth Role — {method_name}", fontsize=16, y=1.02)
+    plt.tight_layout()
+    out = output_dir / f"{method_name}_cluster_role_heatmap.png"
+    plt.savefig(out, dpi=200, bbox_inches="tight")
+    plt.close()
+    print(f"[ok] {out}")
 
 # ---------------------------------------------------------------------------
 # Main
@@ -489,6 +672,8 @@ def main():
 
             print_cluster_means(summary, name)
             plot_pca_scatter(players, name, side_plot_dir)
+            plot_pca_gt_roles(players, name, side_plot_dir)
+            plot_cluster_role_heatmap(players, name, side_plot_dir)
             plot_rating_box(players, name, side_plot_dir)
             plot_radar(summary, name, side_plot_dir)
             plot_zscore_heatmap(summary, players, name, side_plot_dir)
