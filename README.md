@@ -154,8 +154,6 @@ Professional CS2 match demos from HLTV.org, parsed using [`awpy`](https://github
 Currently using 320 players from 176 demos from **IEM Atlanta 2026** and **PGL Astana 2026**, with planned expansion to include the **IEM Cologne Major 2026** and **CS Asia Championship 2026**. 
 This time period was selected because these were high level events took place after the IEM Cologne Major roster locks, meaning team rosters were expected to remain stable until the conclusion of the Major. This should provide more consistent data regarding player roles.
 
-For a full breakdown of the methodology, feature engineering, clustering analysis, visualizations, and findings, see the full project report `Report.pdf`
-
 ## Dependencies
 
 ```bash
