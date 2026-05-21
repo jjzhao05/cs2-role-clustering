@@ -1,4 +1,4 @@
-# CS2 Role Classifier
+# CS2 Role Clustering
 
 For a full breakdown of the methodology, feature engineering, clustering analysis, visualizations, and findings, see the full project report `Report.pdf`
 
