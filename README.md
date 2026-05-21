@@ -140,15 +140,12 @@ For players with multiple demos, a `{feature}_std` column is computed alongside 
 
 Std columns are only non-zero when more than one demo is parsed.
 
-## Results (WIP)
+## Results
 
-Some roles recover cleanly from this data:
-
-- **AWPers** — broky, m0NESY, SunPayus cluster together reliably due to `awp_kill_share` and related features
-- **IGLs** — karrigan, kyxsan, apEX are harder to identify; their primary impact comes from communication and mid-round calling rather than measurable in-game actions
-- **Entry fraggers** — donk, YEKINDAR, EliGE (WIP)
-- **Lurkers** — ropz, blameF, Spinx (WIP)
-- **Outliers** — players like ZywOo, who scores extremely high across many features, may cluster as their own category rather than fitting a recognizable role archetype
+AWPers form an extremely stable and separable cluster across every model.
+T-side IGLs emerge surprisingly well through utility usage and teammate proximity.
+CT-side roles are substantially less separable than T-side roles.
+Positional metrics are among the strongest predictors of role structure.
 
 ## Dataset
 
