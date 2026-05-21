@@ -1,5 +1,7 @@
 # CS2 Role Classifier
 
+For a full breakdown of the methodology, feature engineering, clustering analysis, visualizations, and findings, see the full project report `Report.pdf`
+
 ## Motivation
 
 I have followed professional Counter-Strike for years and have always been interested in how teams structure themselves around player roles. Analysts and fans often describe players as entries, lurkers, anchors, support players, or many other roles, but many of these labels were informal and difficult to define quantitatively. This project started as a way to explore whether those role archetypes could emerge naturally from gameplay data rather than being manually assigned. It also gave me an opportunity to work with demo parsing, feature engineering, clustering methods, and large-scale match data from an esport I genuinely enjoy watching and following.
