@@ -1,0 +1,6 @@
+cluster,dominant_role,n_players,n_match,accuracy
+0,Rifler,30,19,0.6333
+1,AWPer,30,29,0.9667
+2,Rifler,12,6,0.5
+3,IGL,36,25,0.6944
+4,Rifler,52,35,0.6731
