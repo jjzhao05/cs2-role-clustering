@@ -1,9 +1,12 @@
 from pathlib import Path
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import adjusted_rand_score
+from sklearn.metrics import adjusted_rand_score, classification_report
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
+from xgboost import XGBClassifier
 
 OUTPUT_DIR = Path("outputs")
 GROUND_TRUTH_PATH = Path("liquipedia_player_roles.csv")
@@ -193,6 +196,159 @@ def _print_stability_tiers(results_df: pd.DataFrame) -> None:
               f"std={row['stability_std']:.3f}  [{tier(row['stability_mean'])}]")
 
 
+
+PLOTS_DIR = Path("plots")
+XGB_RANDOM_STATE = 42
+XGB_TEST_SIZE = 0.25
+
+
+def plot_xgb_classification_report(
+    df: pd.DataFrame,
+    labels: np.ndarray,
+    name: str,
+    side: str,
+) -> None:
+    """
+    Train an XGBoost classifier on cluster labels, evaluate on a held-out
+    test set, and save the classification report as a formatted PNG.
+    """
+    X = df.drop(columns=[c for c in EVAL_EXCLUDE if c in df.columns])
+    X = X.apply(pd.to_numeric, errors="coerce").fillna(0)
+    X = X.loc[:, X.nunique() > 1]
+    if X.empty:
+        return
+
+    valid = labels != -1
+    X_valid = X.values[valid]
+    y_valid = labels[valid]
+
+    if len(set(y_valid)) < 2 or len(y_valid) < 10:
+        return
+
+    encoder = LabelEncoder()
+    y_enc = encoder.fit_transform(y_valid)
+
+    try:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_valid, y_enc,
+            test_size=XGB_TEST_SIZE,
+            random_state=XGB_RANDOM_STATE,
+            stratify=y_enc,
+        )
+    except ValueError:
+        return
+
+    model = XGBClassifier(
+        n_estimators=300,
+        max_depth=3,
+        learning_rate=0.05,
+        subsample=0.9,
+        colsample_bytree=0.9,
+        objective="multi:softprob",
+        eval_metric="mlogloss",
+        random_state=XGB_RANDOM_STATE,
+        verbosity=0,
+    )
+    model.fit(X_train, y_train)
+    preds = model.predict(X_test)
+
+    cluster_ids = encoder.classes_
+    target_names = [f"Cluster {c}" for c in cluster_ids]
+
+    report = classification_report(
+        y_test, preds,
+        target_names=target_names,
+        output_dict=True,
+    )
+
+    # Build display table
+    rows = []
+    for label in target_names:
+        r = report[label]
+        rows.append({
+            "Cluster": label,
+            "Precision": f"{r['precision']:.2f}",
+            "Recall": f"{r['recall']:.2f}",
+            "F1-Score": f"{r['f1-score']:.2f}",
+            "Support": int(r["support"]),
+        })
+
+    # Spacer then summary rows
+    for summary_key, display_label in [
+        ("accuracy", "Accuracy"),
+        ("macro avg", "Macro Avg"),
+        ("weighted avg", "Weighted Avg"),
+    ]:
+        if summary_key == "accuracy":
+            rows.append({
+                "Cluster": display_label,
+                "Precision": "",
+                "Recall": "",
+                "F1-Score": f"{report['accuracy']:.2f}",
+                "Support": int(sum(r["support"] for r in [report[t] for t in target_names])),
+            })
+        else:
+            r = report[summary_key]
+            rows.append({
+                "Cluster": display_label,
+                "Precision": f"{r['precision']:.2f}",
+                "Recall": f"{r['recall']:.2f}",
+                "F1-Score": f"{r['f1-score']:.2f}",
+                "Support": int(r["support"]),
+            })
+
+    table_df = pd.DataFrame(rows)
+    col_labels = list(table_df.columns)
+    cell_text = table_df.values.tolist()
+
+    n_rows = len(table_df)
+    fig_h = max(3.0, 0.45 * n_rows + 1.8)
+    fig, ax = plt.subplots(figsize=(9, fig_h))
+    ax.axis("off")
+
+    # Alternate row colors
+    row_colors = []
+    divider_idx = len(target_names)  # where summary rows start
+    for i in range(n_rows):
+        if i >= divider_idx:
+            row_colors.append(["#dce8f5"] * len(col_labels))
+        elif i % 2 == 0:
+            row_colors.append(["#f7f7f7"] * len(col_labels))
+        else:
+            row_colors.append(["#ffffff"] * len(col_labels))
+
+    tbl = ax.table(
+        cellText=cell_text,
+        colLabels=col_labels,
+        cellLoc="center",
+        loc="center",
+        cellColours=row_colors,
+    )
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(12)
+    tbl.scale(1, 1.6)
+
+    # Style header
+    for j in range(len(col_labels)):
+        tbl[0, j].set_facecolor("#2c3e50")
+        tbl[0, j].set_text_props(color="white", fontweight="bold")
+
+    ax.set_title(
+        f"XGBoost Classification Report — {side.upper()} {name}",
+        fontsize=14,
+        fontweight="bold",
+        pad=16,
+    )
+
+    plt.tight_layout()
+
+    plots_side_dir = PLOTS_DIR / side
+    plots_side_dir.mkdir(parents=True, exist_ok=True)
+    out = plots_side_dir / f"{name}_xgb_report.png"
+    plt.savefig(out, dpi=200, bbox_inches="tight")
+    plt.close()
+    print(f"[ok] {out}")
+
 # ---------------------------------------------------------------------------
 # Per-side evaluation
 # ---------------------------------------------------------------------------
@@ -290,6 +446,19 @@ def evaluate_side(side: str, gt: pd.DataFrame | None) -> None:
             imp = pd.read_csv(imp_path, index_col=0)
             print(f"\nFeature importance — {side.upper()} {name}:")
             print(imp.head(15).to_string())
+
+        # --- XGBoost classification report PNG ---
+        cluster_path = side_dir / f"{name}_player_clusters.csv"
+        if cluster_path.exists():
+            df_plot = pd.read_csv(cluster_path)
+            if gt is not None:
+                df_plot = match_ground_truth(df_plot, gt)
+            plot_xgb_classification_report(
+                df_plot,
+                df_plot["cluster"].to_numpy(),
+                name,
+                side,
+            )
 
 
 def main():
