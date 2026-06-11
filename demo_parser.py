@@ -116,6 +116,15 @@ def norm_side(col_name: str) -> pl.Expr:
     return pl.col(col_name).cast(pl.Utf8).str.to_lowercase().replace_strict(TEAM_ALIASES, default=None)
 
 
+def norm_name(expr: pl.Expr) -> pl.Expr:
+    """Strip leading spaces and normalise NAF-FLY → NAF."""
+    return (
+        expr.cast(pl.Utf8)
+        .str.replace(r"^ +", "")
+        .str.replace(r"^NAF-FLY$", "NAF")
+    )
+
+
 def rate(num: str, den: str, out: str) -> pl.Expr:
     return pl.when(pl.col(den) > 0).then(pl.col(num) / pl.col(den)).otherwise(0.0).alias(out)
 
@@ -173,7 +182,7 @@ def select_player_side(
 
     return (
         df.select(
-            pl.col(name_col).cast(pl.Utf8).alias("player_name"),
+            norm_name(pl.col(name_col)).alias("player_name"),
             norm_side(side_col).alias("side"),
         )
         .filter(pl.col("player_name").is_not_null() & pl.col("side").is_in(["ct", "t"]))
@@ -219,7 +228,7 @@ def build_position_stats(ticks: pl.DataFrame) -> pl.DataFrame:
 
     pos = (
         ticks.select(
-            pl.col(player).cast(pl.Utf8).alias("player_name"),
+            norm_name(pl.col(player)).alias("player_name"),
             norm_side(side).alias("side"),
             pl.col(round_col).cast(pl.Int64).alias("round_id"),
             pl.col(tick).cast(pl.Int64).alias("tick"),
@@ -396,7 +405,7 @@ def build_builtin_stats(demo: Demo) -> pl.DataFrame:
     if not adr_df.is_empty():
         pieces.append(
             adr_df.select(
-                pl.col("name").cast(pl.Utf8).alias("player_name"),
+                norm_name(pl.col("name")).alias("player_name"),
                 norm_side("side").alias("side"),
                 pl.col("n_rounds").cast(pl.Int64).alias("rounds_played"),
                 pl.col("dmg").cast(pl.Float64).alias("awpy_damage"),
@@ -408,7 +417,7 @@ def build_builtin_stats(demo: Demo) -> pl.DataFrame:
     if not kast_df.is_empty():
         pieces.append(
             kast_df.select(
-                pl.col("name").cast(pl.Utf8).alias("player_name"),
+                norm_name(pl.col("name")).alias("player_name"),
                 norm_side("side").alias("side"),
                 pl.col("kast").cast(pl.Float64).alias("kast"),
             )
@@ -418,7 +427,7 @@ def build_builtin_stats(demo: Demo) -> pl.DataFrame:
     if not rating_df.is_empty():
         pieces.append(
             rating_df.select(
-                pl.col("name").cast(pl.Utf8).alias("player_name"),
+                norm_name(pl.col("name")).alias("player_name"),
                 norm_side("side").alias("side"),
                 pl.col("impact").cast(pl.Float64).alias("impact"),
                 pl.col("rating").cast(pl.Float64).alias("rating"),
@@ -513,7 +522,7 @@ def build_kill_stats(kills: pl.DataFrame) -> pl.DataFrame:
 
     pieces = [
         kills.select(
-            pl.col(attacker).cast(pl.Utf8).alias("player_name"),
+            norm_name(pl.col(attacker)).alias("player_name"),
             norm_side(attacker_side).alias("side"),
             pl.lit(1, dtype=pl.Int64).alias("kills"),
             pl.lit(0, dtype=pl.Int64).alias("deaths"),
@@ -531,7 +540,7 @@ def build_kill_stats(kills: pl.DataFrame) -> pl.DataFrame:
             ).alias("awp_kills"),
         ),
         kills.select(
-            pl.col(victim).cast(pl.Utf8).alias("player_name"),
+            norm_name(pl.col(victim)).alias("player_name"),
             norm_side(victim_side).alias("side"),
             pl.lit(0, dtype=pl.Int64).alias("kills"),
             pl.lit(1, dtype=pl.Int64).alias("deaths"),
@@ -545,7 +554,7 @@ def build_kill_stats(kills: pl.DataFrame) -> pl.DataFrame:
     if assister and assister_side:
         pieces.append(
             kills.select(
-                pl.col(assister).cast(pl.Utf8).alias("player_name"),
+                norm_name(pl.col(assister)).alias("player_name"),
                 norm_side(assister_side).alias("side"),
                 pl.lit(0, dtype=pl.Int64).alias("kills"),
                 pl.lit(0, dtype=pl.Int64).alias("deaths"),
@@ -596,13 +605,13 @@ def build_opening_and_multi_stats(kills: pl.DataFrame) -> pl.DataFrame:
     openings = pl.concat(
         [
             first_kills.select(
-                pl.col(attacker).cast(pl.Utf8).alias("player_name"),
+                norm_name(pl.col(attacker)).alias("player_name"),
                 norm_side(attacker_side).alias("side"),
                 pl.lit(1).alias("opening_kills"),
                 pl.lit(0).alias("opening_deaths"),
             ),
             first_kills.select(
-                pl.col(victim).cast(pl.Utf8).alias("player_name"),
+                norm_name(pl.col(victim)).alias("player_name"),
                 norm_side(victim_side).alias("side"),
                 pl.lit(0).alias("opening_kills"),
                 pl.lit(1).alias("opening_deaths"),
@@ -613,7 +622,7 @@ def build_opening_and_multi_stats(kills: pl.DataFrame) -> pl.DataFrame:
 
     multi = (
         kills.select(
-            pl.col(attacker).cast(pl.Utf8).alias("player_name"),
+            norm_name(pl.col(attacker)).alias("player_name"),
             norm_side(attacker_side).alias("side"),
             pl.col(round_col).alias("round_id"),
         )
@@ -726,7 +735,7 @@ def build_damage_stats(damages: pl.DataFrame) -> pl.DataFrame:
     if attacker and attacker_side and dmg:
         pieces.append(
             damages.select(
-                pl.col(attacker).cast(pl.Utf8).alias("player_name"),
+                norm_name(pl.col(attacker)).alias("player_name"),
                 norm_side(attacker_side).alias("side"),
                 pl.col(dmg).cast(pl.Float64).fill_null(0.0).alias("damage"),
                 pl.lit(0.0).alias("damage_taken"),
@@ -743,7 +752,7 @@ def build_damage_stats(damages: pl.DataFrame) -> pl.DataFrame:
     if victim and victim_side and dmg:
         pieces.append(
             damages.select(
-                pl.col(victim).cast(pl.Utf8).alias("player_name"),
+                norm_name(pl.col(victim)).alias("player_name"),
                 norm_side(victim_side).alias("side"),
                 pl.lit(0.0).alias("damage"),
                 pl.col(dmg).cast(pl.Float64).fill_null(0.0).alias("damage_taken"),
@@ -785,7 +794,7 @@ def build_grenade_stats(shots: pl.DataFrame) -> pl.DataFrame:
 
     df = (
         shots.select(
-            pl.col(player).cast(pl.Utf8).alias("player_name"),
+            norm_name(pl.col(player)).alias("player_name"),
             norm_side(side).alias("side"),
             pl.col(weapon).cast(pl.Utf8).str.to_lowercase().alias("weapon"),
         )
@@ -930,6 +939,14 @@ def parse_single_demo(demo_path: Path) -> pl.DataFrame:
 
 def combine_demo_results(frames: Iterable[pl.DataFrame]) -> pl.DataFrame:
     frames = list(frames)
+    if not frames:
+        raise RuntimeError("No demos parsed successfully.")
+
+    # Drop players that appeared in the demo but never played a round
+    # (spectators, coaches, late-joiners, etc.)
+    frames = [f.filter(pl.col("rounds_played") > 0) if "rounds_played" in f.columns else f for f in frames]
+    frames = [f for f in frames if not f.is_empty()]
+
     if not frames:
         raise RuntimeError("No demos parsed successfully.")
 

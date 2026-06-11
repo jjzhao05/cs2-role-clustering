@@ -8,7 +8,7 @@ BASE = "https://liquipedia.net/counterstrike/api.php"
 
 # Liquipedia requires a descriptive User-Agent; fill in your contact info.
 HEADERS = {
-    "User-Agent": "cs2-role-classifier/0.1 (your_email@example.com)",
+    "User-Agent": "cs2-role-classifier/0.1 (tyylerrose224@gmail.com)",
     "Accept-Encoding": "gzip",
 }
 
@@ -35,12 +35,11 @@ CANONICAL_ROLES = {
 }
 
 # Maps any raw variant → canonical role.
-# Keys are lowercased + stripped before lookup.
 ROLE_ALIAS: dict[str, str] = {
     # AWPer
     "awp":        "AWPer",
     "awper":      "AWPer",
-    # Rifler  (support → Rifler as requested)
+    # Rifler  (support → Rifler)
     "rifle":      "Rifler",
     "rifler":     "Rifler",
     "support":    "Rifler",
@@ -60,10 +59,17 @@ ROLE_ALIAS: dict[str, str] = {
     "caster":   "Caster",
 }
 
+# Roles that need manual review — either unresolved or staff/non-playing roles
+# that may actually be active players mislabelled on Liquipedia.
+REVIEW_ROLES = {"Support", "Coach", "Analyst", "Caster", "Unknown"}
+
 
 def normalize_role(raw: str) -> str:
-    """Return the canonical role for *raw*, or 'Unknown' if unrecognised."""
-    return ROLE_ALIAS.get(raw.strip().lower(), "Unknown")
+    """Check ROLE_ALIAS first; fall back to the raw string, or 'Unknown' if empty."""
+    cleaned = raw.strip()
+    if not cleaned:
+        return "Unknown"
+    return ROLE_ALIAS.get(cleaned.lower(), cleaned)
 
 
 def normalize_roles(raw_roles: list[str]) -> list[str]:
@@ -171,14 +177,23 @@ def main() -> None:
         role_1 = canonical[0] if len(canonical) > 0 else "Unknown"
         role_2 = canonical[1] if len(canonical) > 1 else ""
 
-        row: dict = {"player_page": page, "role_1": role_1, "role_2": role_2}
+        # Flag for review if any role is in REVIEW_ROLES (staff roles or unresolved)
+        needs_review = any(r in REVIEW_ROLES for r in [role_1, role_2] if r)
+
+        row: dict = {
+            "player_page": page,
+            "role_1": role_1,
+            "role_2": role_2,
+            "needs_review": needs_review,
+        }
         if error:
             row["error"] = error
 
         rows.append(row)
 
         role_display = f"{role_1} + {role_2}" if role_2 else role_1
-        status = f"[{i:>3}/{len(players)}] {page:<20} → {role_display}"
+        review_flag = "  ★ REVIEW" if needs_review else ""
+        status = f"[{i:>3}/{len(players)}] {page:<20} → {role_display}{review_flag}"
         if error:
             status += f"  ⚠  {error}"
         print(status)
