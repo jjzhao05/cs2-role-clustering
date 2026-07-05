@@ -33,14 +33,6 @@ TEAM_ALIASES = {
 
 RIFLES = {"ak47", "m4a1", "m4a1_silencer", "aug", "sg556", "galilar", "famas"}
 AWP = {"awp"}
-PISTOLS = {
-    "glock", "usp_silencer", "hkp2000", "p250", "deagle",
-    "elite", "tec9", "fiveseven", "cz75a", "revolver"
-}
-
-SMGS = {"mac10", "mp9", "mp7", "mp5sd", "ump45", "p90", "bizon"}
-SHOTGUNS = {"nova", "xm1014", "mag7", "sawedoff"}
-SNIPERS = {"ssg08", "scar20", "g3sg1"}
 UTIL_DAMAGE_WEAPONS = {"hegrenade", "inferno", "molotov", "incgrenade"}
 GRENADE_WEAPONS = {
     "weapon_hegrenade": "he_grenades",
@@ -891,14 +883,16 @@ def add_rates(df: pl.DataFrame) -> pl.DataFrame:
     return df.fill_null(0).fill_nan(0)
 
 
+def _drop_columns(df: pl.DataFrame, cols: set[str]) -> pl.DataFrame:
+    return df.drop([c for c in cols if c in df.columns]).fill_null(0).fill_nan(0)
+
+
 def keep_rate_features_only(df: pl.DataFrame) -> pl.DataFrame:
-    drop_cols = [c for c in RATE_COLUMNS_TO_DROP if c in df.columns]
-    return df.drop(drop_cols).fill_null(0).fill_nan(0)
+    return _drop_columns(df, RATE_COLUMNS_TO_DROP)
 
 
 def drop_unwanted_final_columns(df: pl.DataFrame) -> pl.DataFrame:
-    drop_cols = [c for c in FINAL_COLUMNS_TO_DROP if c in df.columns]
-    return df.drop(drop_cols).fill_null(0).fill_nan(0)
+    return _drop_columns(df, FINAL_COLUMNS_TO_DROP)
 
 
 def parse_single_demo(demo_path: Path) -> pl.DataFrame:

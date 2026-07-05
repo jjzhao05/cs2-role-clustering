@@ -48,6 +48,14 @@ def train_label_model(path):
         print(f"Skipping {path.name}: only one cluster.")
         return
 
+    class_counts = pd.Series(y_encoded).value_counts()
+
+    if class_counts.min() < 2:
+        print(f"Skipping {path.name}: at least one cluster has fewer than 2 players.")
+        print("Cluster counts:")
+        print(pd.Series(y).value_counts().sort_index())
+        return
+
     X_train, X_test, y_train, y_test = train_test_split(
         X,
         y_encoded,

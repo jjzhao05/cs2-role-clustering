@@ -1,4 +1,4 @@
-import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -6,105 +6,88 @@ from datetime import datetime, timedelta
 
 DOWNLOADS_DIR = Path(r"C:\Users\Jonathan Zhao\Downloads")
 DEMOS_DIR = Path(r"C:\Users\Jonathan Zhao\Documents\GitHub\cs2-role-classifier\demos")
+SEVEN_ZIP = Path(r"C:\Program Files\7-Zip\7z.exe")
 MAX_FILE_AGE_HOURS = 6
 
-# change this if your 7-Zip is installed elsewhere
-SEVEN_ZIP = Path(r"C:\Program Files\7-Zip\7z.exe") 
+
+def strip_random_ids(name: str) -> str:
+    # A junk tracking ID looks like a '-' or '_' separated word containing an
+    # uppercase letter (real words in these filenames are always lowercase).
+    tokens = re.split(r"([-_])", name)  # alternates: word, separator, word, separator, ...
+
+    kept_parts = []
+    for i in range(0, len(tokens), 2):
+        word = tokens[i]
+        separator = tokens[i + 1] if i + 1 < len(tokens) else ""
+
+        is_junk = any(c.isupper() for c in word)
+        if is_junk:
+            continue  # drop this word and the separator right after it
+
+        kept_parts.append(word)
+        kept_parts.append(separator)
+
+    cleaned = "".join(kept_parts)
+    cleaned = re.sub(r"[-_]{2,}", lambda m: m.group()[0], cleaned)  # collapse leftover -- or __
+    cleaned = cleaned.strip("-_")
+
+    return cleaned if cleaned else name
 
 
-def ensure_dir(path: Path):
-    path.mkdir(parents=True, exist_ok=True)
+ACTIVE_DUTY_MAPS = [
+    "de_mirage", "de_inferno", "de_nuke", "de_overpass", "de_ancient",
+    "de_anubis", "de_dust2",
+]
+MAP_PATTERN = re.compile("|".join(re.escape(m) for m in ACTIVE_DUTY_MAPS).encode())
 
 
-def is_recent(path: Path) -> bool:
-    modified = datetime.fromtimestamp(path.stat().st_mtime)
-    cutoff = datetime.now() - timedelta(hours=MAX_FILE_AGE_HOURS)
-    return modified >= cutoff
-
-
-def extract_rar(rar_path: Path, temp_dir: Path) -> bool:
-    if not SEVEN_ZIP.exists():
-        print(f"[error] 7z not found at: {SEVEN_ZIP}")
-        return False
-
-    try:
-        result = subprocess.run(
-            [str(SEVEN_ZIP), "x", str(rar_path), f"-o{temp_dir}", "-y"],
-            capture_output=True,
-            text=True
-        )
-
-        if result.returncode != 0:
-            print(f"[skip] failed to extract {rar_path.name}")
-            if result.stderr.strip():
-                print(result.stderr.strip())
-            elif result.stdout.strip():
-                print(result.stdout.strip())
-            return False
-
-        return True
-
-    except Exception as e:
-        print(f"[skip] failed to extract {rar_path.name}: {e}")
-        return False
-
-
-def move_demos_skip_duplicates(src: Path, dest: Path) -> int:
-    moved = 0
-    skipped = 0
-
-    for root, _, files in os.walk(src):
-        for f in files:
-            if not f.lower().endswith(".dem"):
-                continue
-
-            src_path = Path(root) / f
-            dest_path = dest / f
-
-            if dest_path.exists():
-                skipped += 1
-                print(f"[skip] duplicate: {f}")
-                continue
-
-            shutil.move(str(src_path), str(dest_path))
-            moved += 1
-            print(f"[move] {f}")
-
-    print(f"[summary] moved={moved}, skipped_duplicates={skipped}")
-    return moved
+def get_map_name(dem_path: Path) -> str:
+    match = MAP_PATTERN.search(dem_path.read_bytes()[:8192])
+    return match.group().decode() if match else "unknown_map"
 
 
 def main():
-    ensure_dir(DEMOS_DIR)
+    DEMOS_DIR.mkdir(parents=True, exist_ok=True)
+    cutoff = datetime.now() - timedelta(hours=MAX_FILE_AGE_HOURS)
 
-    rars = [
-        p for p in DOWNLOADS_DIR.iterdir()
-        if p.is_file() and p.suffix.lower() == ".rar" and is_recent(p)
-    ]
+    for rar_path in DOWNLOADS_DIR.glob("*.rar"):
+        if datetime.fromtimestamp(rar_path.stat().st_mtime) < cutoff:
+            continue
 
-    if not rars:
-        print("[info] no recent rar files found")
-        return
-
-    for rar_path in rars:
         print(f"[process] {rar_path.name}")
-
         temp_dir = DOWNLOADS_DIR / "__temp__"
-        if temp_dir.exists():
-            shutil.rmtree(temp_dir)
+        shutil.rmtree(temp_dir, ignore_errors=True)
         temp_dir.mkdir()
 
-        if not extract_rar(rar_path, temp_dir):
+        result = subprocess.run(
+            [str(SEVEN_ZIP), "x", str(rar_path), f"-o{temp_dir}", "-y"],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print(f"[skip] failed to extract {rar_path.name}: {result.stderr or result.stdout}")
             shutil.rmtree(temp_dir, ignore_errors=True)
             continue
 
-        moved = move_demos_skip_duplicates(temp_dir, DEMOS_DIR)
+        event_name = strip_random_ids(rar_path.stem)
+        moved = 0
 
-        if moved > 0:
+        for dem_path in temp_dir.rglob("*.dem"):
+            base_name = f"{event_name}_{get_map_name(dem_path)}"
+            dest_path = DEMOS_DIR / f"{base_name}.dem"
+            counter = 2
+            while dest_path.exists():
+                dest_path = DEMOS_DIR / f"{base_name}_{counter}.dem"
+                counter += 1
+
+            shutil.move(str(dem_path), str(dest_path))
+            print(f"[move] {dem_path.name} -> {dest_path.name}")
+            moved += 1
+
+        if moved:
             rar_path.unlink()
             print(f"[delete] {rar_path.name}")
         else:
-            print(f"[keep] no new demos in {rar_path.name}")
+            print(f"[keep] no demos found in {rar_path.name}")
 
         shutil.rmtree(temp_dir, ignore_errors=True)
 
