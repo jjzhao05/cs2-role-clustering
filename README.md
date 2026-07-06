@@ -4,6 +4,8 @@ Unsupervised machine learning project that discovers professional Counter-Strike
 
 The pipeline parses raw `.dem` files, engineers behavioral and positional features, clusters players using multiple algorithms, and evaluates cluster quality using stability analysis and external role labels from Liquipedia.
 
+Major changes currently happening, so code and report will not match!!
+
 [Read the full project report](Report.pdf)
 
 ## Dataset
