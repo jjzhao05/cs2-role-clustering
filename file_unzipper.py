@@ -10,28 +10,37 @@ SEVEN_ZIP = Path(r"C:\Program Files\7-Zip\7z.exe")
 MAX_FILE_AGE_HOURS = 6
 
 
+def _first_char_of_match(match: re.Match) -> str:
+    return match.group()[0]
+
+#Demo downloads have large strings of characters that are random IDs. This function removes those random IDs from the demo file names.
+
 def strip_random_ids(name: str) -> str:
-    # A junk tracking ID looks like a '-' or '_' separated word containing an
-    # uppercase letter (real words in these filenames are always lowercase).
-    tokens = re.split(r"([-_])", name)  # alternates: word, separator, word, separator, ...
+    tokens = re.split(r"([-_])", name)
 
     kept_parts = []
     for i in range(0, len(tokens), 2):
         word = tokens[i]
-        separator = tokens[i + 1] if i + 1 < len(tokens) else ""
+
+        if i + 1 < len(tokens):
+            separator = tokens[i + 1]
+        else:
+            separator = ""
 
         is_junk = any(c.isupper() for c in word)
         if is_junk:
-            continue  # drop this word and the separator right after it
+            continue
 
         kept_parts.append(word)
         kept_parts.append(separator)
 
     cleaned = "".join(kept_parts)
-    cleaned = re.sub(r"[-_]{2,}", lambda m: m.group()[0], cleaned)  # collapse leftover -- or __
+    cleaned = re.sub(r"[-_]{2,}", _first_char_of_match, cleaned) 
     cleaned = cleaned.strip("-_")
 
-    return cleaned if cleaned else name
+    if cleaned:
+        return cleaned
+    return name
 
 
 ACTIVE_DUTY_MAPS = [
@@ -43,7 +52,9 @@ MAP_PATTERN = re.compile("|".join(re.escape(m) for m in ACTIVE_DUTY_MAPS).encode
 
 def get_map_name(dem_path: Path) -> str:
     match = MAP_PATTERN.search(dem_path.read_bytes()[:8192])
-    return match.group().decode() if match else "unknown_map"
+    if match:
+        return match.group().decode()
+    return "unknown_map"
 
 
 def main():

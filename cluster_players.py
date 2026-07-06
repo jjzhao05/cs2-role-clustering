@@ -13,7 +13,6 @@ OUTPUT_DIR = Path("outputs")
 K_VALUES = [3, 4, 5, 6, 7, 8]
 RANDOM_STATE = 101705
 
-# Features excluded from clustering but kept in the output CSV for plotting.
 CLUSTER_EXCLUDE_FEATURES = {"adr", "kdr"}
 
 # HDBSCAN hyperparameter grid
@@ -55,16 +54,25 @@ def get_features(df):
 def fit_labels(X, method, k=None, mcs=None, ms=None, random_state=RANDOM_STATE):
     """Fit one clustering method and return labels, or None if it produced <2 clusters."""
     if method == "kmeans":
-        return KMeans(n_clusters=k, random_state=random_state, n_init=20).fit_predict(X)
+        model = KMeans(n_clusters=k, random_state=random_state, n_init=20)
+        return model.fit_predict(X)
 
     if method == "gmm":
-        return (GaussianMixture(n_components=k, random_state=random_state, covariance_type="full")
-                .fit(X).predict(X))
+        model = GaussianMixture(n_components=k, random_state=random_state, covariance_type="full")
+        model.fit(X)
+        return model.predict(X)
 
     if method == "hdbscan":
-        labels = hdbscan.HDBSCAN(min_cluster_size=mcs, min_samples=ms,
-                                  cluster_selection_method="eom", prediction_data=True).fit_predict(X)
-        return labels if len(set(labels) - {-1}) >= 2 else None
+        clusterer = hdbscan.HDBSCAN(
+            min_cluster_size=mcs,
+            min_samples=ms,
+            cluster_selection_method="eom",
+            prediction_data=True,
+        )
+        labels = clusterer.fit_predict(X)
+        if len(set(labels) - {-1}) >= 2:
+            return labels
+        return None
 
     raise ValueError(f"Unknown method: {method}")
 
@@ -97,10 +105,22 @@ def compute_stability(X, full_labels, method, k=None, mcs=None, ms=None,
 
 
 def composite_score(sil, db, stab_mean, stab_std):
-    sil_term = SILHOUETTE_WEIGHT * (0.0 if np.isnan(sil) else sil)
-    db_term = DB_WEIGHT * (0.0 if np.isnan(db) else 1.0 / (1.0 + db))
-    stab_term = 0.0 if np.isnan(stab_mean) else max(0.0, stab_mean - stab_std)
-    return sil_term + db_term + STABILITY_WEIGHT * stab_term
+    if np.isnan(sil):
+        sil_term = 0.0
+    else:
+        sil_term = SILHOUETTE_WEIGHT * sil
+
+    if np.isnan(db):
+        db_term = 0.0
+    else:
+        db_term = DB_WEIGHT * (1.0 / (1.0 + db))
+
+    if np.isnan(stab_mean):
+        stab_term = 0.0
+    else:
+        stab_term = STABILITY_WEIGHT * max(0.0, stab_mean - stab_std)
+
+    return sil_term + db_term + stab_term
 
 
 def score_candidate(X, side, method, name, labels, k=None, mcs=None, ms=None):
@@ -118,12 +138,21 @@ def score_candidate(X, side, method, name, labels, k=None, mcs=None, ms=None):
     db = davies_bouldin_score(X[mask], labels[mask])
     stab_mean, stab_std = compute_stability(X, labels, method, k=k, mcs=mcs, ms=ms)
 
+    if k is not None:
+        cluster_count = k
+    else:
+        cluster_count = len(set(labels) - {-1})
+
     return {
-        "side": side, "method": method, "name": name,
-        "k": k if k is not None else len(set(labels) - {-1}),
+        "side": side,
+        "method": method,
+        "name": name,
+        "k": cluster_count,
         "noise_pct": round(noise_pct, 4),
-        "silhouette": sil, "davies_bouldin": db,
-        "stability_mean": stab_mean, "stability_std": stab_std,
+        "silhouette": sil,
+        "davies_bouldin": db,
+        "stability_mean": stab_mean,
+        "stability_std": stab_std,
         "composite_score": composite_score(sil, db, stab_mean, stab_std),
     }
 
@@ -149,7 +178,7 @@ def cluster_side(df, side):
             labels = fit_labels(X_scaled, method, k=k)
             methods[name] = labels
             result = score_candidate(X_scaled, side, method, name, labels, k=k)
-            if result:
+            if result is not None:
                 results.append(result)
 
     # --- HDBSCAN grid search ---
@@ -163,7 +192,7 @@ def cluster_side(df, side):
                 continue
             methods[name] = labels
             result = score_candidate(X_scaled, side, "hdbscan", name, labels, mcs=mcs, ms=ms)
-            if result:
+            if result is not None:
                 results.append(result)
 
     if not results:

@@ -1,0 +1,6 @@
+cluster,dominant_role,n_players,n_match,accuracy
+0,Non-IGL,32,29,0.9062
+1,Non-IGL,32,25,0.7812
+2,Non-IGL,23,23,1.0
+3,IGL,22,15,0.6818
+4,Non-IGL,28,25,0.8929

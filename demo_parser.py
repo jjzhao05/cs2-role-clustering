@@ -11,13 +11,10 @@ from awpy import Demo
 from awpy.stats import adr, calculate_trades, kast, rating
 
 # Constants and configuration
-
 NEAR_ENEMY_RADIUS = 750.0
 STATIONARY_STEP_DISTANCE = 1.0
 
 # Number of worker processes for parallel demo parsing.
-# Defaults to all logical CPU cores; lower this if memory is tight
-# (each worker loads a full demo into memory simultaneously).
 WORKERS = 6
     
 TEAM_ALIASES = {
@@ -109,11 +106,11 @@ def norm_side(col_name: str) -> pl.Expr:
 
 
 def norm_name(expr: pl.Expr) -> pl.Expr:
-    """Strip leading spaces and normalise NAF-FLY → NAF."""
     return (
         expr.cast(pl.Utf8)
         .str.replace(r"^ +", "")
-        .str.replace(r"^NAF-FLY$", "NAF")
+        .str.to_lowercase()
+        .str.replace(r"^naf-fly$", "naf")
     )
 
 
@@ -937,15 +934,19 @@ def combine_demo_results(frames: Iterable[pl.DataFrame]) -> pl.DataFrame:
         raise RuntimeError("No demos parsed successfully.")
 
     # Drop players that appeared in the demo but never played a round
-    # (spectators, coaches, late-joiners, etc.)
-    frames = [f.filter(pl.col("rounds_played") > 0) if "rounds_played" in f.columns else f for f in frames]
+    
+    filtered_frames = []
+    for f in frames:
+        if "rounds_played" in f.columns:
+            filtered_frames.append(f.filter(pl.col("rounds_played") > 0))
+        else:
+            filtered_frames.append(f)
+    frames = filtered_frames
     frames = [f for f in frames if not f.is_empty()]
 
     if not frames:
         raise RuntimeError("No demos parsed successfully.")
 
-    # Compute rates on each per-demo frame first so std is taken over
-    # per-demo rates (e.g. kpr per demo), not raw counts.
     frames = [add_rates(f) for f in frames]
 
     df = pl.concat(frames, how="diagonal_relaxed")
@@ -966,8 +967,6 @@ def combine_demo_results(frames: Iterable[pl.DataFrame]) -> pl.DataFrame:
         and not c.startswith("_")
     ]
 
-    # Columns to compute std over: weighted/rate cols (most informative for
-    # consistency) and position features. Excludes raw counts and rounds_played.
     std_cols = [c for c in weighted_cols if c in work.columns]
 
     agg_exprs = [pl.sum(c).alias(c) for c in sum_cols]
@@ -976,7 +975,7 @@ def combine_demo_results(frames: Iterable[pl.DataFrame]) -> pl.DataFrame:
         for c in weighted_cols
         if f"_{c}_weighted" in work.columns
     )
-    # Std aggregations — _std suffix marks them clearly as variance features.
+    # Std aggregations 
     agg_exprs.extend(
         pl.std(c).fill_null(0.0).alias(f"{c}_std")
         for c in std_cols
@@ -1034,8 +1033,6 @@ def sort_output_columns(df: pl.DataFrame) -> pl.DataFrame:
         "time_stationary_rate",
     ]
 
-    # Interleave _std columns right after their base column so the CSV reads
-    # naturally: adr, adr_std, kpr, kpr_std, ...
     ordered: list[str] = ["player_name", "side", "rounds_played"]
     for col in metric_order:
         if col in df.columns:
@@ -1057,7 +1054,10 @@ def main() -> None:
     args = parser.parse_args()
 
     test_mode = args.test_output_csv is not None
-    output_csv = args.test_output_csv if test_mode else args.output_csv
+    if test_mode:
+        output_csv = args.test_output_csv
+    else:
+        output_csv = args.output_csv
 
     if output_csv is None:
         raise ValueError("You must provide an output CSV path, or use --test <output_csv>.")
@@ -1074,9 +1074,7 @@ def main() -> None:
 
     print(f"[info] spawning {WORKERS} worker process(es)")
 
-    # Each demo is parsed in its own process — fully independent, no shared
-    # state — so ProcessPoolExecutor sidesteps the GIL and gets real
-    # parallelism for the CPU/IO-bound awpy parsing work.
+    # Each demo is parsed in its own process
     with ProcessPoolExecutor(max_workers=WORKERS) as pool:
         future_to_path = {
             pool.submit(parse_single_demo, demo_path): demo_path
