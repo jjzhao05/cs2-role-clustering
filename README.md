@@ -5,6 +5,8 @@ This project builds an end-to-end unsupervised learning pipeline to discover pro
 
 The project compares KMeans, Gaussian Mixture Models, and HDBSCAN using internal clustering metrics, bootstrap stability analysis, expert-curated role annotations, and model-based interpretability. The main finding is that AWPers are highly separable across both CT and T side, while rifler and IGL-related roles are more overlapping and context-dependent.
 
+The full report can be read [here](report.pdf)
+
 ## Research Question
 
 Can professional CS2 player roles be discovered from behavioral and positional gameplay statistics using unsupervised learning?
