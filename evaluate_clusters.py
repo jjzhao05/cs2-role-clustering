@@ -13,28 +13,26 @@ from xgboost import XGBClassifier
 OUTPUT_DIR = Path("outputs")
 PLOTS_DIR = Path("plots")
 
+# The ground-truth file: a UTF-16 tab-separated export with
+# Name, Role, CT Role, T Role columns.
 GROUND_TRUTH_CANDIDATES = [
-    Path("Roles.csv")
+    Path("Roles.csv"),
+    Path("roles.csv"),
 ]
 
 RANDOM_STATE = 69420
 XGB_RANDOM_STATE = 42
 XGB_TEST_SIZE = 0.25
 
-SHOW_UNMATCHED_GT_POINTS = False
-INCLUDE_UNMATCHED_PLAYERS_IN_CLUSTER_HULLS = False
-
-SHOW_IGL_MARKERS = True
-JITTER_POINTS = True
-PCA_JITTER_STD = 0.04
-PCA_JITTER_RANDOM_STATE = 7
-
+# Features excluded from evaluation models. These are metadata, plot coordinates,
+# target labels, or simple performance stats you chose not to use for clustering.
 EVAL_EXCLUDE = {
     "player_name", "side", "cluster", "pc1", "pc2",
     "gt_role_1", "gt_role_2", "gt_role_source",
     "gt_side_role", "gt_general_role", "gt_general_role_raw", "gt_igl_status",
     "gt_ct_role", "gt_t_role", "gt_match_key", "adr", "kpr",
 }
+
 
 # ---------------------------------------------------------------------------
 # Ground truth loading + joining
@@ -50,11 +48,20 @@ def _name_key(value) -> str:
     return _clean_text(value).lower()
 
 
-def _explicit_role(role: str) -> str:
-    """Return the role label exactly as it appears in Roles.csv, except blanks/unknowns."""
+def _canonical_general_role(role: str) -> str:
+    """
+    Collapse the Roles.csv general Role column into a cleaner role label.
+    This keeps IGL-Opener, IGL-Closer, and IGL-AWPer together as IGL so the
+    T-side IGL result can still be evaluated separately from side roles.
+    """
     role = _clean_text(role)
-    if role.lower() in ("", "unknown", "nan"):
+    low = role.lower()
+    if not role or low == "unknown":
         return ""
+    if "igl" in low:
+        return "IGL"
+    if "awp" in low:
+        return "AWPer"
     return role
 
 
@@ -90,7 +97,7 @@ def _prepare_roles_csv(gt: pd.DataFrame) -> pd.DataFrame:
     out["player_page"] = gt["Name"].map(_clean_text)
     out["_key"] = gt["Name"].map(_name_key)
     out["gt_general_role_raw"] = gt["Role"].map(_clean_text)
-    out["gt_general_role"] = gt["Role"].map(_explicit_role)
+    out["gt_general_role"] = gt["Role"].map(_canonical_general_role)
     out["gt_ct_role"] = gt["CT Role"].map(_clean_text)
     out["gt_t_role"] = gt["T Role"].map(_clean_text)
     out["gt_igl_status"] = np.where(
@@ -146,7 +153,7 @@ def match_ground_truth(players_df: pd.DataFrame, gt: pd.DataFrame, side: str, mo
     Join ground-truth labels (from Roles.csv) to a player-cluster dataframe.
 
     mode='side'    -> CT uses CT Role, T uses T Role. This is the main metric.
-    mode='general' -> uses the explicit general Role column exactly as written in Roles.csv.
+    mode='general' -> uses the general Role column, with IGL-* collapsed to IGL.
     mode='igl'     -> binary IGL vs Non-IGL diagnostic.
     """
     stale_cols = [
@@ -184,7 +191,7 @@ def match_ground_truth(players_df: pd.DataFrame, gt: pd.DataFrame, side: str, mo
     elif mode == "general":
         merged["gt_role_1"] = merged["gt_general_role"]
         merged["gt_role_2"] = ""
-        merged["gt_role_source"] = "Role (explicit Roles.csv label)"
+        merged["gt_role_source"] = "Role (IGL-* collapsed to IGL)"
     elif mode == "igl":
         merged["gt_role_1"] = merged["gt_igl_status"]
         merged["gt_role_2"] = ""
@@ -347,6 +354,136 @@ def compute_feature_importance(df: pd.DataFrame, labels: np.ndarray) -> pd.Serie
 # ---------------------------------------------------------------------------
 # Stability tier printer
 # ---------------------------------------------------------------------------
+
+METHOD_COLORS = {
+    "kmeans": "#4C72B0",
+    "gmm": "#DD8452",
+    "hdbscan": "#8C8C8C",
+}
+
+
+def plot_stability_tiers(results_df: pd.DataFrame, side: str) -> None:
+    """
+    Horizontal bar chart of bootstrap stability (mean ARI ± 1 std) per model,
+    colored by clustering method, sorted highest-to-lowest, with reference
+    lines at the minimum-stability threshold and the "high tier" cutoff.
+    """
+    stab = (
+        results_df[["name", "method", "stability_mean", "stability_std"]]
+        .dropna(subset=["stability_mean"])
+        .sort_values("stability_mean", ascending=False)
+        .reset_index(drop=True)
+    )
+    if stab.empty:
+        return
+
+    fig_height = max(4.0, 0.3 * len(stab) + 1.5)
+    fig, ax = plt.subplots(figsize=(7, fig_height))
+
+    y_pos = np.arange(len(stab))
+    colors = [METHOD_COLORS.get(m, "#999999") for m in stab["method"]]
+
+    ax.barh(
+        y_pos, stab["stability_mean"], xerr=stab["stability_std"],
+        color=colors, error_kw={"ecolor": "black", "elinewidth": 1, "capsize": 3},
+    )
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(stab["name"], fontsize=8)
+    ax.invert_yaxis()  # highest stability at the top
+
+    ax.set_xlabel("Mean ARI (± 1 std)")
+    ax.set_title(f"Bootstrap Stability — {side.upper()}")
+
+    x_max = (stab["stability_mean"] + stab["stability_std"]).max()
+    ax.set_xlim(0, max(1.05, x_max * 1.05))
+
+    ax.axvline(0.50, color="black", linestyle="--", linewidth=1)
+    ax.axvline(0.80, color="black", linestyle=":", linewidth=1)
+
+    from matplotlib.patches import Patch
+    from matplotlib.lines import Line2D
+    method_handles = [
+        Patch(color=METHOD_COLORS[m], label=m)
+        for m in ("kmeans", "gmm")
+        if m in stab["method"].unique()
+    ]
+    threshold_handles = [
+        Line2D([0], [0], color="black", linestyle="--", linewidth=1, label="Min threshold (0.50)"),
+        Line2D([0], [0], color="black", linestyle=":", linewidth=1, label="High tier (0.80)"),
+    ]
+    ax.legend(handles=method_handles + threshold_handles, loc="lower right", fontsize=8)
+
+    plt.tight_layout()
+
+    plots_side_dir = PLOTS_DIR / side
+    plots_side_dir.mkdir(parents=True, exist_ok=True)
+    out = plots_side_dir / "stability_tiers.png"
+    plt.savefig(out, dpi=200, bbox_inches="tight")
+    plt.close()
+    print(f"[ok] {out}")
+
+
+def plot_composite_scores(results_df: pd.DataFrame, side: str) -> None:
+    """
+    Horizontal bar chart of composite score per model, colored by method,
+    sorted highest-to-lowest.
+
+    Unlike bootstrap ARI, composite score has no universal 0/1 meaning --
+    it's a weighted blend of silhouette, Davies-Bouldin, and stability, so
+    there's no fixed "good" cutoff. Instead of an arbitrary threshold line,
+    this marks the median across your own candidate models as a relative
+    reference point.
+    """
+    scored = (
+        results_df[["name", "method", "composite_score"]]
+        .dropna(subset=["composite_score"])
+        .sort_values("composite_score", ascending=False)
+        .reset_index(drop=True)
+    )
+    if scored.empty:
+        return
+
+    fig_height = max(4.0, 0.3 * len(scored) + 1.5)
+    fig, ax = plt.subplots(figsize=(7, fig_height))
+
+    y_pos = np.arange(len(scored))
+    colors = [METHOD_COLORS.get(m, "#999999") for m in scored["method"]]
+
+    ax.barh(y_pos, scored["composite_score"], color=colors)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(scored["name"], fontsize=8)
+    ax.invert_yaxis()  # highest score at the top
+
+    ax.set_xlabel("Composite Score")
+    ax.set_title(f"Composite Score — {side.upper()}")
+
+    x_max = scored["composite_score"].max()
+    ax.set_xlim(0, max(0.1, x_max * 1.1))
+
+    median = scored["composite_score"].median()
+    ax.axvline(median, color="black", linestyle="--", linewidth=1)
+
+    from matplotlib.patches import Patch
+    from matplotlib.lines import Line2D
+    method_handles = [
+        Patch(color=METHOD_COLORS[m], label=m)
+        for m in ("kmeans", "gmm")
+        if m in scored["method"].unique()
+    ]
+    threshold_handles = [
+        Line2D([0], [0], color="black", linestyle="--", linewidth=1, label=f"Median ({median:.3f})"),
+    ]
+    ax.legend(handles=method_handles + threshold_handles, loc="lower right", fontsize=8)
+
+    plt.tight_layout()
+
+    plots_side_dir = PLOTS_DIR / side
+    plots_side_dir.mkdir(parents=True, exist_ok=True)
+    out = plots_side_dir / "composite_scores.png"
+    plt.savefig(out, dpi=200, bbox_inches="tight")
+    plt.close()
+    print(f"[ok] {out}")
+
 
 def _print_stability_tiers(results_df: pd.DataFrame) -> None:
     stab = (
@@ -523,59 +660,16 @@ def plot_xgb_classification_report(
     print(f"[ok] {out}")
 
 
-
-EXPLICIT_ROLE_COLORS = {
-    # Shared / weapon specialist
-    "AWPer": "#D81B60",       # strong magenta-red
-    "IGL-AWPer": "#8E063B",   # dark magenta-red
-
-    # General Role labels from Roles.csv
-    "Opener": "#E69F00",      # amber
-    "Closer": "#0072B2",      # blue
-    "Linchpin": "#009E73",    # teal-green
-    "IGL-Opener": "#56B4E9",  # sky blue
-    "IGL-Closer": "#6A3D9A",  # purple
-
-    # CT Role labels from Roles.csv
-    "Anchor": "#0072B2",      # blue
-    "Rotator": "#009E73",     # teal-green
-    "Mixed": "#6A3D9A",       # purple
-
-    # T Role labels from Roles.csv
-    "Spacetaker": "#E69F00",  # amber/orange
-    "Lurker": "#6A3D9A",      # purple
-    "Flex": "#009E73",        # teal-green
-
-    # Missing ground truth
-    "No GT": "#A0A0A0",       # neutral gray
+ROLE_COLORS = {
+    "AWPer": "#e6194b",
+    "Rifler": "#7fd8c8",
+    "IGL": "#1f3864",
+    "Lurker": "#1a9988",
+    "Entry Fragger": "#7f7f7f",
+    "Support": "#f0a30a",
+    "No GT": "#bdbdbd",
 }
 
-CLUSTER_BOUNDARY_COLORS = [
-    "#4C78A8",  # blue
-    "#F58518",  # orange
-    "#54A24B",  # green
-    "#B279A2",  # mauve
-    "#9D755D",  # brown
-    "#72B7B2",  # teal
-    "#EECA3B",  # yellow
-    "#8F8F8F",  # gray
-]
-
-FALLBACK_ROLE_COLORS = [
-    "#0072B2",
-    "#E69F00",
-    "#009E73",
-    "#6A3D9A",
-    "#56B4E9",
-    "#D81B60",
-    "#8A8A8A",
-]
-
-
-def _role_color(role: str, idx: int) -> str:
-    if role in EXPLICIT_ROLE_COLORS:
-        return EXPLICIT_ROLE_COLORS[role]
-    return FALLBACK_ROLE_COLORS[idx % len(FALLBACK_ROLE_COLORS)]
 
 def plot_cluster_vs_ground_truth(
     df_with_gt: pd.DataFrame,
@@ -587,11 +681,8 @@ def plot_cluster_vs_ground_truth(
     PCA scatter plot: each point is a player, colored by ground-truth role,
     with a translucent convex-hull boundary drawn around each cluster.
 
-    By default, players missing ground-truth labels are hidden from the plot.
-    The quantitative GT metrics are also matched-subset metrics, so this keeps
-    the main report figure visually aligned with the reported evaluation.
-
-    Set SHOW_UNMATCHED_GT_POINTS=True for diagnostic coverage plots.
+    Players missing from the ground-truth file are plotted as "No GT" so
+    coverage gaps are visible on the plot instead of silently dropped.
     """
     if "gt_role_1" not in df_with_gt.columns:
         return
@@ -602,61 +693,20 @@ def plot_cluster_vs_ground_truth(
     if valid.sum() == 0:
         return
 
-    optional_cols = [
-        c for c in ("gt_igl_status", "gt_general_role_raw", "gt_general_role")
-        if c in df_with_gt.columns
-    ]
-    plot_cols = ["player_name", "pc1", "pc2", "gt_role_1"] + optional_cols
-    plot_df = df_with_gt.loc[valid, plot_cols].copy()
+    plot_df = df_with_gt.loc[valid, ["player_name", "pc1", "pc2", "gt_role_1"]].copy()
     plot_df["cluster"] = labels[valid]
-
-    if "gt_igl_status" in plot_df.columns:
-        plot_df["is_igl"] = plot_df["gt_igl_status"].map(_clean_text).str.lower().eq("igl")
-    elif "gt_general_role_raw" in plot_df.columns:
-        plot_df["is_igl"] = plot_df["gt_general_role_raw"].map(_clean_text).str.contains(
-            "IGL", case=False, na=False
-        )
-    elif "gt_general_role" in plot_df.columns:
-        plot_df["is_igl"] = plot_df["gt_general_role"].map(_clean_text).str.contains(
-            "IGL", case=False, na=False
-        )
-    else:
-        plot_df["is_igl"] = False
 
     gt_role = plot_df["gt_role_1"].map(_clean_text)
     has_role = gt_role.map(_is_valid_role)
-    n_matched = int(has_role.sum())
-    n_total = int(len(has_role))
-    match_pct = n_matched / n_total if n_total else 0.0
-
     plot_df["gt_role"] = gt_role.where(has_role, "No GT")
 
-    if SHOW_UNMATCHED_GT_POINTS:
-        display_df = plot_df.copy()
-    else:
-        display_df = plot_df[plot_df["gt_role"] != "No GT"].copy()
+    fig, ax = plt.subplots(figsize=(11, 8.5))
 
-    if display_df.empty:
-        print(f"[skip] {side.upper()} {name}: no matched ground-truth rows to plot")
-        return
-
-    # Apply tiny jitter only to rendered point/text positions.
-    if JITTER_POINTS:
-        rng = np.random.default_rng(PCA_JITTER_RANDOM_STATE)
-        display_df["pc1_plot"] = display_df["pc1"] + rng.normal(0, PCA_JITTER_STD, len(display_df))
-        display_df["pc2_plot"] = display_df["pc2"] + rng.normal(0, PCA_JITTER_STD, len(display_df))
-    else:
-        display_df["pc1_plot"] = display_df["pc1"]
-        display_df["pc2_plot"] = display_df["pc2"]
-
-    fig, ax = plt.subplots(figsize=(12, 8.5))
-
-    # Translucent convex-hull boundary per cluster
-    hull_df = plot_df if INCLUDE_UNMATCHED_PLAYERS_IN_CLUSTER_HULLS else display_df
-    cluster_ids = sorted(hull_df["cluster"].unique())
-    cluster_palette = CLUSTER_BOUNDARY_COLORS
+    # --- Translucent convex-hull boundary per cluster ---
+    cluster_ids = sorted(plot_df["cluster"].unique())
+    cluster_palette = plt.cm.tab10.colors
     for i, cluster_id in enumerate(cluster_ids):
-        points = hull_df.loc[hull_df["cluster"] == cluster_id, ["pc1", "pc2"]].to_numpy()
+        points = plot_df.loc[plot_df["cluster"] == cluster_id, ["pc1", "pc2"]].to_numpy()
         color = cluster_palette[i % len(cluster_palette)]
         label = f"Cluster {cluster_id} boundary"
 
@@ -666,57 +716,48 @@ def plot_cluster_vs_ground_truth(
             boundary = Polygon(
                 hull_points, closed=True,
                 facecolor=color, edgecolor=color,
-                alpha=0.1, linewidth=1.8, zorder=1,
+                alpha=0.15, linewidth=1.0, zorder=1,
                 label=label,
             )
             ax.add_patch(boundary)
+        else:
+            # Too few points to form a hull; still show the cluster in the legend.
+            ax.scatter([], [], color=color, alpha=0.3, s=100, marker="s", label=label)
 
-
-    # Points colored by ground-truth role
-    role_order = sorted(r for r in display_df["gt_role"].unique() if r != "No GT")
-    if SHOW_UNMATCHED_GT_POINTS and "No GT" in display_df["gt_role"].values:
+    # --- Points colored by ground-truth role ---
+    role_order = sorted(r for r in plot_df["gt_role"].unique() if r != "No GT")
+    if "No GT" in plot_df["gt_role"].values:
         role_order.append("No GT")
 
     for role in role_order:
-        subset = display_df[display_df["gt_role"] == role]
-        color = _role_color(role, role_order.index(role))
+        subset = plot_df[plot_df["gt_role"] == role]
+        color = ROLE_COLORS.get(role, "#999999")
         ax.scatter(
-            subset["pc1_plot"], subset["pc2_plot"],
-            color=color, edgecolor="white", linewidth=0.8,
-            s=58, zorder=3, label=role,
+            subset["pc1"], subset["pc2"],
+            color=color, edgecolor="white", linewidth=0.4,
+            s=45, zorder=3, label=role,
         )
 
-    #  ring around IGLs, while preserving role color
-    if SHOW_IGL_MARKERS and "is_igl" in display_df.columns:
-        igl_df = display_df[display_df["is_igl"]].copy()
-        if not igl_df.empty:
-            ax.scatter(
-                igl_df["pc1_plot"], igl_df["pc2_plot"],
-                facecolors="none", edgecolors="#1D72CC", linewidth=1.8,
-                s=112, marker="o", zorder=5, label="IGL"
-            )
-
-    # Player-name labels
-    for _, row in display_df.iterrows():
+    # --- Player-name labels ---
+    for _, row in plot_df.iterrows():
         ax.annotate(
             row["player_name"],
-            (row["pc1_plot"], row["pc2_plot"]),
-            fontsize=5.5, alpha=0.8, xytext=(3, 3), textcoords="offset points", zorder=4,
+            (row["pc1"], row["pc2"]),
+            fontsize=6, xytext=(3, 3), textcoords="offset points", zorder=4,
         )
+
+    n_matched = int(has_role.sum())
+    n_total = int(len(has_role))
+    match_pct = n_matched / n_total if n_total else 0.0
 
     ax.set_xlabel("PC1")
     ax.set_ylabel("PC2")
-    igl_count = int(display_df.get("is_igl", pd.Series(False, index=display_df.index)).sum())
-    igl_note = f"; {igl_count} IGLs marked" if SHOW_IGL_MARKERS and igl_count else ""
-
-    jitter_note = "; points lightly jittered" if JITTER_POINTS else ""
     ax.set_title(
-        f"PCA - Explicit Role Labels + IGL Overlay vs Cluster Boundaries\n"
-        f"{side.upper()} {name}  ({n_matched}/{n_total} GT matched, {match_pct:.0%}; "
-        f"plotting {len(display_df)} labeled players{igl_note}{jitter_note})"
+        f"PCA - Ground-Truth Roles vs Cluster Boundaries\n"
+        f"{side.upper()} {name}  ({n_matched}/{n_total} matched, {match_pct:.0%})"
     )
-    ax.grid(True, alpha=0.4)
-    ax.legend(title="Explicit Role Label", bbox_to_anchor=(1.02, 1), loc="upper left", borderaxespad=0, fontsize=9, frameon=True)
+    ax.grid(True, alpha=0.3)
+    ax.legend(title="GT Role", bbox_to_anchor=(1.02, 1), loc="upper left", borderaxespad=0, fontsize=8)
     plt.tight_layout()
 
     plots_side_dir = PLOTS_DIR / side
@@ -853,7 +894,7 @@ def evaluate_side(side: str, gt: pd.DataFrame | None) -> None:
 
     if gt is not None:
         print("\nGT note: gt_side_* uses CT Role for CT and T Role for T.")
-        print("GT note: gt_general_* uses the explicit Role label from Roles.csv.")
+        print("GT note: gt_general_* uses Role with IGL-* collapsed to IGL.")
         for _, row in best_models.iterrows():
             name = row["name"]
             for prefix, label in [
@@ -881,6 +922,8 @@ def evaluate_side(side: str, gt: pd.DataFrame | None) -> None:
             )
 
     _print_stability_tiers(results_df)
+    plot_stability_tiers(results_df, side)
+    plot_composite_scores(results_df, side)
 
     for _, row in best_models.iterrows():
         name = row["name"]
