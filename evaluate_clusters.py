@@ -614,7 +614,7 @@ ROLE_COLORS = {
     "No GT": "#C7C7C7",
 }
 
-IGL_HIGHLIGHT_COLOR = "#00BFFF"
+IGL_HIGHLIGHT_COLOR = "#0077FF"
 
 def plot_cluster_vs_ground_truth(
     df_with_gt: pd.DataFrame,
