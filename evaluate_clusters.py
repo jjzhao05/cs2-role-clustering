@@ -344,53 +344,131 @@ METHOD_COLORS = {
 
 
 def plot_stability_tiers(results_df: pd.DataFrame, side: str) -> None:
-
-    stab = (
-        results_df[["name", "method", "stability_mean", "stability_std"]]
-        .dropna(subset=["stability_mean"])
-        .sort_values("stability_mean", ascending=False)
-        .reset_index(drop=True)
-    )
+    columns = [
+        "name", "method", "k", "noise_pct", "stability_mean",
+        "stability_std", "composite_score",
+    ]
+    stab = results_df[columns].dropna(subset=["stability_mean"]).copy()
     if stab.empty:
         return
 
-    fig_height = max(4.0, 0.3 * len(stab) + 1.5)
-    fig, ax = plt.subplots(figsize=(7, fig_height))
+    # The HDBSCAN grid contains many equivalent two-cluster solutions. Showing
+    # every row makes the chart too tall to use in the report, so retain one
+    # representative: the most stable result, with composite score as a tie-break.
+    non_hdbscan = stab[stab["method"] != "hdbscan"]
+    hdbscan = (
+        stab[stab["method"] == "hdbscan"]
+        .sort_values(
+            ["stability_mean", "composite_score", "name"],
+            ascending=[False, False, True],
+            kind="mergesort",
+        )
+        .head(1)
+    )
+    omitted_hdbscan = max(0, int((stab["method"] == "hdbscan").sum()) - len(hdbscan))
+    stab = (
+        pd.concat([non_hdbscan, hdbscan], ignore_index=True)
+        .sort_values(["stability_mean", "name"], ascending=[False, True], kind="mergesort")
+        .reset_index(drop=True)
+    )
+
+    eligible = non_hdbscan[
+        non_hdbscan["stability_mean"].isna()
+        | (non_hdbscan["stability_mean"] >= 0.50)
+    ]
+    if eligible.empty:
+        eligible = non_hdbscan
+    selected_name = None
+    if not eligible.empty:
+        selected_name = eligible.sort_values(
+            ["composite_score", "name"],
+            ascending=[False, True],
+            kind="mergesort",
+        ).iloc[0]["name"]
+
+    def display_name(row: pd.Series) -> str:
+        k = int(row["k"])
+        if row["method"] == "hdbscan":
+            return f"HDBSCAN representative (k={k}, {row['noise_pct']:.0%} noise)"
+        return f"{row['method'].upper()} k={k}"
+
+    stab["display_name"] = stab.apply(display_name, axis=1)
+    stab["selected"] = stab["name"].eq(selected_name)
+
+    fig_height = max(5.5, 0.48 * len(stab) + 2.0)
+    fig, ax = plt.subplots(figsize=(10, fig_height))
+
+    ax.axvspan(0.00, 0.50, color="#FDECEC", alpha=0.75, zorder=0)
+    ax.axvspan(0.50, 0.80, color="#FFF4CC", alpha=0.75, zorder=0)
+    ax.axvspan(0.80, 1.00, color="#E8F5E9", alpha=0.75, zorder=0)
 
     y_pos = np.arange(len(stab))
     colors = [METHOD_COLORS.get(m, "#999999") for m in stab["method"]]
+    edgecolors = ["#111111" if selected else "none" for selected in stab["selected"]]
+    linewidths = [2.0 if selected else 0.0 for selected in stab["selected"]]
 
     ax.barh(
         y_pos, stab["stability_mean"], xerr=stab["stability_std"],
-        color=colors, error_kw={"ecolor": "black", "elinewidth": 1, "capsize": 3},
+        color=colors,
+        edgecolor=edgecolors,
+        linewidth=linewidths,
+        error_kw={"ecolor": "#222222", "elinewidth": 1.2, "capsize": 3},
+        zorder=2,
     )
     ax.set_yticks(y_pos)
-    ax.set_yticklabels(stab["name"], fontsize=8)
+    ax.set_yticklabels(stab["display_name"], fontsize=10)
+    for label, selected in zip(ax.get_yticklabels(), stab["selected"]):
+        if selected:
+            label.set_fontweight("bold")
     ax.invert_yaxis()                                
 
-    ax.set_xlabel("Mean ARI (± 1 std)")
-    ax.set_title(f"Subsampling Stability — {side.upper()}")
+    ax.set_xlabel("Mean stability ARI (+/- 1 SD)")
+    ax.set_title(f"{side.upper()} Model Stability from 80% Subsampling", pad=22)
+    ax.set_xlim(0, 1.12)
 
-    x_max = (stab["stability_mean"] + stab["stability_std"]).max()
-    ax.set_xlim(0, max(1.05, x_max * 1.05))
+    ax.axvline(0.50, color="#444444", linestyle="--", linewidth=1.2, zorder=3)
+    ax.axvline(0.80, color="#444444", linestyle=":", linewidth=1.2, zorder=3)
+    ax.grid(axis="x", color="white", linewidth=1, alpha=0.9, zorder=1)
 
-    ax.axvline(0.50, color="black", linestyle="--", linewidth=1)
-    ax.axvline(0.80, color="black", linestyle=":", linewidth=1)
+    tier_transform = ax.get_xaxis_transform()
+    ax.text(0.25, 1.01, "Low", ha="center", va="bottom", transform=tier_transform, fontsize=9)
+    ax.text(0.65, 1.01, "Moderate", ha="center", va="bottom", transform=tier_transform, fontsize=9)
+    ax.text(0.90, 1.01, "High", ha="center", va="bottom", transform=tier_transform, fontsize=9)
+
+    for y, row in stab.iterrows():
+        ax.text(
+            0.025,
+            y,
+            f"{row['stability_mean']:.3f}",
+            va="center",
+            ha="left",
+            fontsize=9,
+            fontweight="bold" if row["selected"] else "normal",
+            color="white",
+            zorder=4,
+        )
 
     from matplotlib.patches import Patch
-    from matplotlib.lines import Line2D
     method_handles = [
-        Patch(color=METHOD_COLORS[m], label=m)
-        for m in ("kmeans", "gmm")
+        Patch(color=METHOD_COLORS[m], label=m.upper())
+        for m in ("kmeans", "gmm", "hdbscan")
         if m in stab["method"].unique()
     ]
-    threshold_handles = [
-        Line2D([0], [0], color="black", linestyle="--", linewidth=1, label="Min threshold (0.50)"),
-        Line2D([0], [0], color="black", linestyle=":", linewidth=1, label="High tier (0.80)"),
-    ]
-    ax.legend(handles=method_handles + threshold_handles, loc="lower right", fontsize=8)
+    selected_handle = Patch(facecolor="white", edgecolor="#111111", linewidth=2, label="Selected model")
+    ax.legend(handles=method_handles + [selected_handle], loc="lower right", fontsize=9)
 
-    plt.tight_layout()
+    if omitted_hdbscan:
+        fig.text(
+            0.01,
+            0.01,
+            f"One representative HDBSCAN result is shown; {omitted_hdbscan} grid rows are omitted.",
+            ha="left",
+            va="bottom",
+            fontsize=8,
+            color="#555555",
+        )
+
+    plt.tight_layout(rect=(0, 0.035, 1, 1))
 
     plots_side_dir = PLOTS_DIR / side
     plots_side_dir.mkdir(parents=True, exist_ok=True)
