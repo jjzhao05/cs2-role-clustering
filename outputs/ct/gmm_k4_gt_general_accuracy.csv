@@ -1,0 +1,5 @@
+cluster,dominant_role,n_players,n_match,accuracy
+0,Opener,47,24,0.5106
+1,Linchpin,20,12,0.6
+2,AWPer,25,24,0.96
+3,Linchpin,31,11,0.3548

@@ -1,0 +1,5 @@
+cluster,dominant_role,n_players,n_match,accuracy
+0,Spacetaker,47,29,0.617
+1,Spacetaker,21,16,0.7619
+2,AWPer,25,25,1.0
+3,Lurker,30,27,0.9

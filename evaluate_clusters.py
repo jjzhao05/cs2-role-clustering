@@ -7,10 +7,17 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
 from scipy.spatial import ConvexHull
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import adjusted_rand_score, classification_report
-from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    adjusted_rand_score,
+    balanced_accuracy_score,
+    classification_report,
+    f1_score,
+)
+from sklearn.model_selection import RepeatedStratifiedKFold
 from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBClassifier
+
+from feature_config import select_model_features
 
 OUTPUT_DIR = Path("outputs")
 PLOTS_DIR = Path("plots")
@@ -23,17 +30,10 @@ GROUND_TRUTH_CANDIDATES = [
 
 RANDOM_STATE = 69420
 XGB_RANDOM_STATE = 42
-XGB_TEST_SIZE = 0.25
+SURROGATE_CV_SPLITS = 5
+SURROGATE_CV_REPEATS = 5
 
                                                                          
-EVAL_EXCLUDE = {
-    "player_name", "side", "cluster", "pc1", "pc2",
-    "gt_role_1", "gt_role_2", "gt_role_source",
-    "gt_side_role", "gt_general_role", "gt_general_role_raw", "gt_igl_status",
-    "gt_ct_role", "gt_t_role", "gt_match_key", "adr", "kpr",
-}
-                                                                  
-
 def _clean_text(value) -> str:
     if pd.isna(value):
         return ""
@@ -213,7 +213,9 @@ def resolve_gt_label(players_df: pd.DataFrame, labels: np.ndarray) -> pd.Series:
     def pick_role(row) -> str:
         cid = row["_label"]
         if cid == -1:
-            return ""
+            r1 = _clean_text(row.get("gt_role_1", ""))
+            r2 = _clean_text(row.get("gt_role_2", ""))
+            return r1 if _is_valid_role(r1) else r2 if _is_valid_role(r2) else ""
 
         majority = role_counts.get(cid, pd.Series(dtype=int))
         if majority.empty:
@@ -236,7 +238,10 @@ def resolve_gt_label(players_df: pd.DataFrame, labels: np.ndarray) -> pd.Series:
     return df.apply(pick_role, axis=1)
 
 
-def ground_truth_accuracy(labels: np.ndarray, players_df: pd.DataFrame) -> tuple[float | None, pd.DataFrame | None]:
+def ground_truth_accuracy(
+    labels: np.ndarray,
+    players_df: pd.DataFrame,
+) -> tuple[dict[str, float] | None, pd.DataFrame | None]:
     if "gt_role_1" not in players_df.columns:
         return None, None
 
@@ -246,14 +251,20 @@ def ground_truth_accuracy(labels: np.ndarray, players_df: pd.DataFrame) -> tuple
 
     rows = []
     total_match = total_players = 0
+    y_true: list[str] = []
+    y_pred: list[str] = []
 
-    for cluster_id, group in df[df["_label"] != -1].groupby("_label"):
+    for cluster_id, group in df.groupby("_label"):
         valid = group[group["_resolved"].str.strip().str.len() > 0]
         if valid.empty:
             continue
-        dominant = valid["_resolved"].value_counts().idxmax()
-        n_match = int((valid["_resolved"] == dominant).sum())
         n_players = int(len(valid))
+        if cluster_id == -1:
+            dominant = "Noise (unassigned)"
+            n_match = 0
+        else:
+            dominant = valid["_resolved"].value_counts().idxmax()
+            n_match = int((valid["_resolved"] == dominant).sum())
         rows.append({
             "cluster": cluster_id,
             "dominant_role": dominant,
@@ -263,11 +274,20 @@ def ground_truth_accuracy(labels: np.ndarray, players_df: pd.DataFrame) -> tuple
         })
         total_match += n_match
         total_players += n_players
+        y_true.extend(valid["_resolved"].tolist())
+        y_pred.extend([dominant] * n_players)
 
     if not rows or total_players == 0:
         return None, None
 
-    return round(total_match / total_players, 4), pd.DataFrame(rows).sort_values("cluster")
+    role_counts = pd.Series(y_true).value_counts()
+    scores = {
+        "accuracy": round(total_match / total_players, 4),
+        "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
+        "macro_f1": float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
+        "baseline_accuracy": float(role_counts.max() / total_players),
+    }
+    return scores, pd.DataFrame(rows).sort_values("cluster")
 
 
 def ground_truth_ari(labels: np.ndarray, players_df: pd.DataFrame) -> float | None:
@@ -276,8 +296,7 @@ def ground_truth_ari(labels: np.ndarray, players_df: pd.DataFrame) -> float | No
 
     resolved = resolve_gt_label(players_df, labels)
     mask = (
-        (labels != -1)
-        & resolved.str.strip().str.len().gt(0)
+        resolved.str.strip().str.len().gt(0)
         & resolved.str.strip().str.lower().ne("unknown")
     )
     if mask.sum() < 2 or resolved[mask].nunique() < 2:
@@ -298,10 +317,9 @@ def ground_truth_match_stats(players_df: pd.DataFrame) -> tuple[int, float]:
                                                                           
 
 def compute_feature_importance(df: pd.DataFrame, labels: np.ndarray) -> pd.Series | None:
-    X = df.drop(columns=[c for c in EVAL_EXCLUDE if c in df.columns], errors="ignore")
-    X = X.apply(pd.to_numeric, errors="coerce").fillna(0)
-    X = X.loc[:, X.nunique() > 1]
-    if X.empty:
+    try:
+        X = select_model_features(df)
+    except ValueError:
         return None
 
     valid = labels != -1
@@ -351,7 +369,7 @@ def plot_stability_tiers(results_df: pd.DataFrame, side: str) -> None:
     ax.invert_yaxis()                                
 
     ax.set_xlabel("Mean ARI (± 1 std)")
-    ax.set_title(f"Bootstrap Stability — {side.upper()}")
+    ax.set_title(f"Subsampling Stability — {side.upper()}")
 
     x_max = (stab["stability_mean"] + stab["stability_std"]).max()
     ax.set_xlim(0, max(1.05, x_max * 1.05))
@@ -451,7 +469,7 @@ def _print_stability_tiers(results_df: pd.DataFrame) -> None:
             return "MEDIUM"
         return "LOW"
 
-    print("\nStability tiers (bootstrap ARI):")
+    print("\nStability tiers (subsampling ARI):")
     for _, row in stab.iterrows():
         print(
             f"  {row['name']:<30}  mean={row['stability_mean']:.3f}  "
@@ -466,10 +484,9 @@ def plot_xgb_classification_report(
     side: str,
 ) -> None:
 
-    X = df.drop(columns=[c for c in EVAL_EXCLUDE if c in df.columns], errors="ignore")
-    X = X.apply(pd.to_numeric, errors="coerce").fillna(0)
-    X = X.loc[:, X.nunique() > 1]
-    if X.empty:
+    try:
+        X = select_model_features(df)
+    except ValueError:
         return
 
     valid = labels != -1
@@ -482,30 +499,35 @@ def plot_xgb_classification_report(
     encoder = LabelEncoder()
     y_enc = encoder.fit_transform(y_valid)
 
-    try:
-        X_train, X_test, y_train, y_test = train_test_split(
-            X_valid,
-            y_enc,
-            test_size=XGB_TEST_SIZE,
-            random_state=XGB_RANDOM_STATE,
-            stratify=y_enc,
-        )
-    except ValueError:
+    class_counts = np.bincount(y_enc)
+    n_splits = min(SURROGATE_CV_SPLITS, int(class_counts.min()))
+    if n_splits < 2:
         return
 
-    model = XGBClassifier(
-        n_estimators=300,
-        max_depth=3,
-        learning_rate=0.05,
-        subsample=0.9,
-        colsample_bytree=0.9,
-        objective="multi:softprob",
-        eval_metric="mlogloss",
+    cv = RepeatedStratifiedKFold(
+        n_splits=n_splits,
+        n_repeats=SURROGATE_CV_REPEATS,
         random_state=XGB_RANDOM_STATE,
-        verbosity=0,
     )
-    model.fit(X_train, y_train)
-    preds = model.predict(X_test)
+    votes = np.zeros((len(y_enc), len(encoder.classes_)), dtype=np.int64)
+    for fold, (train_idx, test_idx) in enumerate(cv.split(X_valid, y_enc)):
+        model = XGBClassifier(
+            n_estimators=300,
+            max_depth=3,
+            learning_rate=0.05,
+            subsample=0.9,
+            colsample_bytree=0.9,
+            objective="multi:softprob",
+            eval_metric="mlogloss",
+            random_state=XGB_RANDOM_STATE + fold,
+            verbosity=0,
+        )
+        model.fit(X_valid[train_idx], y_enc[train_idx])
+        fold_preds = model.predict(X_valid[test_idx]).astype(int)
+        votes[test_idx, fold_preds] += 1
+
+    preds = votes.argmax(axis=1)
+    y_test = y_enc
 
     cluster_ids = encoder.classes_
     target_names = [f"Cluster {c}" for c in cluster_ids]
@@ -587,7 +609,7 @@ def plot_xgb_classification_report(
         tbl[0, j].set_text_props(color="white", fontweight="bold")
 
     ax.set_title(
-        f"XGBoost Classification Report - {side.upper()} {name}",
+        f"Repeated-CV XGBoost Surrogate Fidelity - {side.upper()} {name}",
         fontsize=14,
         fontweight="bold",
         pad=16,
@@ -597,7 +619,7 @@ def plot_xgb_classification_report(
 
     plots_side_dir = PLOTS_DIR / side
     plots_side_dir.mkdir(parents=True, exist_ok=True)
-    out = plots_side_dir / f"{name}_xgb_report.png"
+    out = plots_side_dir / f"{name}_xgb_surrogate_report.png"
     plt.savefig(out, dpi=200, bbox_inches="tight")
     plt.close()
     print(f"[ok] {out}")
@@ -732,11 +754,14 @@ def plot_cluster_vs_ground_truth(
 def _ensure_result_cols(results_df: pd.DataFrame, gt: pd.DataFrame | None) -> pd.DataFrame:
     cols = ["gt_ari", "gt_accuracy", "gt_matched_n", "gt_match_rate"]
     if gt is not None:
-        cols += [
-            "gt_side_ari", "gt_side_accuracy",
-            "gt_general_ari", "gt_general_accuracy",
-            "gt_igl_ari", "gt_igl_accuracy",
-        ]
+        for prefix in ("gt_side", "gt_general", "gt_igl"):
+            cols += [
+                f"{prefix}_ari",
+                f"{prefix}_accuracy",
+                f"{prefix}_balanced_accuracy",
+                f"{prefix}_macro_f1",
+                f"{prefix}_baseline_accuracy",
+            ]
     for col in cols:
         if col not in results_df.columns:
             results_df[col] = float("nan")
@@ -752,13 +777,17 @@ def _store_metric(
     side_dir: Path,
 ) -> None:
     ari = ground_truth_ari(labels, df_with_gt)
-    acc, breakdown = ground_truth_accuracy(labels, df_with_gt)
+    quality, breakdown = ground_truth_accuracy(labels, df_with_gt)
     matched_n, match_rate = ground_truth_match_stats(df_with_gt)
 
     if ari is not None:
         results_df.loc[results_df["name"] == model_name, f"{prefix}_ari"] = ari
-    if acc is not None:
-        results_df.loc[results_df["name"] == model_name, f"{prefix}_accuracy"] = acc
+    if quality is not None:
+        for metric, value in quality.items():
+            results_df.loc[
+                results_df["name"] == model_name,
+                f"{prefix}_{metric}",
+            ] = value
     results_df.loc[results_df["name"] == model_name, "gt_matched_n"] = matched_n
     results_df.loc[results_df["name"] == model_name, "gt_match_rate"] = match_rate
 
@@ -781,6 +810,23 @@ def evaluate_side(side: str, gt: pd.DataFrame | None) -> None:
     if not cluster_files:
         print(f"[skip] {side}: no cluster CSVs found.")
         return
+
+    side_plot_dir = PLOTS_DIR / side
+    side_plot_dir.mkdir(parents=True, exist_ok=True)
+    generated_plot_patterns = [
+        "stability_tiers.png",
+        "composite_scores.png",
+        "*_xgb_surrogate_report.png",
+        "*_cluster_vs_gt.png",
+        "*_cluster_vs_gt_clean.png",
+        "*_pca.png",
+        "*_radar.png",
+        "*_zscore_heatmap.png",
+        "*_feature_importance.png",
+    ]
+    for pattern in generated_plot_patterns:
+        for path in side_plot_dir.glob(pattern):
+            path.unlink()
 
     for cluster_path in sorted(cluster_files):
         name = cluster_path.stem.replace("_player_clusters", "")
@@ -826,7 +872,11 @@ def evaluate_side(side: str, gt: pd.DataFrame | None) -> None:
     if eligible.empty:
         print("[warn] all non-HDBSCAN models below stability threshold; falling back.")
         eligible = results_df
-    best_models = eligible.sort_values("composite_score", ascending=False).head(2)
+    best_models = eligible.sort_values(
+        ["composite_score", "name"],
+        ascending=[False, True],
+        kind="mergesort",
+    ).head(2)
 
     print(f"\n{'=' * 60}")
     print(f"{side.upper()} EVALUATION SUMMARY")
@@ -838,9 +888,10 @@ def evaluate_side(side: str, gt: pd.DataFrame | None) -> None:
     ]
     if gt is not None:
         display_cols += [
-            "gt_side_ari", "gt_side_accuracy",
-            "gt_general_ari", "gt_general_accuracy",
-            "gt_igl_ari", "gt_igl_accuracy",
+            "gt_side_ari", "gt_side_accuracy", "gt_side_baseline_accuracy",
+            "gt_general_ari", "gt_general_accuracy", "gt_general_baseline_accuracy",
+            "gt_igl_ari", "gt_igl_accuracy", "gt_igl_balanced_accuracy",
+            "gt_igl_macro_f1", "gt_igl_baseline_accuracy",
             "gt_matched_n", "gt_match_rate",
         ]
     display_cols = [c for c in display_cols if c in best_models.columns]
@@ -862,10 +913,14 @@ def evaluate_side(side: str, gt: pd.DataFrame | None) -> None:
                 if breakdown_path.exists():
                     breakdown = pd.read_csv(breakdown_path)
                     acc = row.get(f"{prefix}_accuracy", float("nan"))
+                    balanced = row.get(f"{prefix}_balanced_accuracy", float("nan"))
+                    macro_f1 = row.get(f"{prefix}_macro_f1", float("nan"))
+                    baseline = row.get(f"{prefix}_baseline_accuracy", float("nan"))
                     ari = row.get(f"{prefix}_ari", float("nan"))
                     print(
                         f"\nGT accuracy - {side.upper()} {name} ({label}; "
-                        f"overall={acc:.1%}  ARI={ari:.4f}):"
+                        f"overall={acc:.1%}  baseline={baseline:.1%}  "
+                        f"balanced={balanced:.1%}  macro-F1={macro_f1:.3f}  ARI={ari:.4f}):"
                     )
                     print(breakdown.to_string(index=False))
 

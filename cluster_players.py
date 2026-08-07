@@ -1,4 +1,5 @@
 from pathlib import Path
+import shutil
 import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
@@ -8,12 +9,12 @@ from sklearn.mixture import GaussianMixture
 from sklearn.preprocessing import StandardScaler
 import hdbscan
 
+from feature_config import CLUSTER_RANDOM_STATE, MIN_ROUNDS_PLAYED, select_model_features
+
 INPUT_PATH = "output.csv"
 OUTPUT_DIR = Path("outputs")
 K_VALUES = [3, 4, 5, 6, 7, 8]
-RANDOM_STATE = 101705
-
-CLUSTER_EXCLUDE_FEATURES = {"adr", "kdr"}
+RANDOM_STATE = CLUSTER_RANDOM_STATE
 
 # HDBSCAN hyperparameter grid
 HDBSCAN_MIN_CLUSTER_SIZES = [2, 3, 4, 5, 6, 8, 10, 12, 15]
@@ -21,7 +22,7 @@ HDBSCAN_MIN_SAMPLES = [1, 2, 3, 4, 5, 6, 7, 8]
 HDBSCAN_MAX_NOISE_FRACTION = 0.30
 
 # Stability analysis config
-STABILITY_N_BOOTS = 50
+STABILITY_N_BOOTS = 100
 STABILITY_RESAMPLE_FRAC = 0.80
 STABILITY_WEIGHT = 0.40
 SILHOUETTE_WEIGHT = 0.40
@@ -36,19 +37,36 @@ def load_data():
         raise ValueError(f"Missing required columns: {sorted(missing)}")
     df["side"] = df["side"].str.lower()
     df = df[df["side"].isin(["ct", "t"])]
+    low_rounds = df["rounds_played"] < MIN_ROUNDS_PLAYED
+    if low_rounds.any():
+        print(
+            f"[info] excluding {int(low_rounds.sum())} player-side profiles with "
+            f"fewer than {MIN_ROUNDS_PLAYED} rounds"
+        )
+        df = df[~low_rounds]
     if df.empty:
         raise ValueError("No rows left after filtering.")
     return df
 
 
 def get_features(df):
-    exclude = {"player_name", "side", "rounds_played"} | CLUSTER_EXCLUDE_FEATURES
-    X = df.drop(columns=[c for c in exclude if c in df.columns])
-    X = X.apply(pd.to_numeric, errors="coerce").fillna(0)
-    X = X.loc[:, X.nunique() > 1]
-    if X.empty:
-        raise ValueError("No usable feature columns.")
-    return X
+    return select_model_features(df)
+
+
+def clean_generated_outputs(side_dir: Path) -> None:
+    """Remove artifacts owned by the pipeline before writing a fresh run."""
+    patterns = [
+        "model_scores.csv",
+        "*_player_clusters.csv",
+        "*_feature_importance.csv",
+        "*_gt_side_accuracy.csv",
+        "*_gt_general_accuracy.csv",
+        "*_gt_igl_accuracy.csv",
+    ]
+    for pattern in patterns:
+        for path in side_dir.glob(pattern):
+            path.unlink()
+    shutil.rmtree(side_dir / "surrogate_labels", ignore_errors=True)
 
 
 def fit_labels(X, method, k=None, mcs=None, ms=None, random_state=RANDOM_STATE):
@@ -80,28 +98,36 @@ def fit_labels(X, method, k=None, mcs=None, ms=None, random_state=RANDOM_STATE):
 def compute_stability(X, full_labels, method, k=None, mcs=None, ms=None,
                        n_boots=STABILITY_N_BOOTS, resample_frac=STABILITY_RESAMPLE_FRAC,
                        random_state=RANDOM_STATE):
-    """Bootstrap stability via Adjusted Rand Index across resamples of the data."""
+    """Subsampling stability including both clustered and noise assignments."""
     rng = np.random.RandomState(random_state)
     n = X.shape[0]
     sample_size = max(3, int(n * resample_frac))
     scores = []
+    noise_agreements = []
 
     for i in range(n_boots):
-        idx = rng.choice(n, size=sample_size, replace=True)
+        idx = rng.choice(n, size=sample_size, replace=False)
         boot_labels = fit_labels(X[idx], method, k=k, mcs=mcs, ms=ms, random_state=random_state + i)
         if boot_labels is None:
             continue
 
         ref = full_labels[idx]
-        mask = (ref != -1) & (boot_labels != -1)
-        if mask.sum() < 2 or len(set(ref[mask])) < 2:
+        if len(set(ref)) < 2 or len(set(boot_labels)) < 2:
             continue
 
-        scores.append(adjusted_rand_score(ref[mask], boot_labels[mask]))
+        # Treat HDBSCAN noise (-1) as an assignment that must also reproduce.
+        scores.append(adjusted_rand_score(ref, boot_labels))
+        if method == "hdbscan":
+            noise_agreements.append(float(np.mean((ref == -1) == (boot_labels == -1))))
 
     if len(scores) < 5:
-        return float("nan"), float("nan")
-    return float(np.mean(scores)), float(np.std(scores))
+        return float("nan"), float("nan"), float("nan"), float("nan")
+    if noise_agreements:
+        noise_mean = float(np.mean(noise_agreements))
+        noise_std = float(np.std(noise_agreements))
+    else:
+        noise_mean = noise_std = float("nan")
+    return float(np.mean(scores)), float(np.std(scores)), noise_mean, noise_std
 
 
 def composite_score(sil, db, stab_mean, stab_std):
@@ -136,7 +162,9 @@ def score_candidate(X, side, method, name, labels, k=None, mcs=None, ms=None):
 
     sil = silhouette_score(X[mask], labels[mask])
     db = davies_bouldin_score(X[mask], labels[mask])
-    stab_mean, stab_std = compute_stability(X, labels, method, k=k, mcs=mcs, ms=ms)
+    stab_mean, stab_std, noise_stab_mean, noise_stab_std = compute_stability(
+        X, labels, method, k=k, mcs=mcs, ms=ms
+    )
 
     if k is not None:
         cluster_count = k
@@ -153,11 +181,17 @@ def score_candidate(X, side, method, name, labels, k=None, mcs=None, ms=None):
         "davies_bouldin": db,
         "stability_mean": stab_mean,
         "stability_std": stab_std,
+        "noise_assignment_stability_mean": noise_stab_mean,
+        "noise_assignment_stability_std": noise_stab_std,
         "composite_score": composite_score(sil, db, stab_mean, stab_std),
     }
 
 
 def cluster_side(df, side):
+    side_dir = OUTPUT_DIR / side
+    side_dir.mkdir(parents=True, exist_ok=True)
+    clean_generated_outputs(side_dir)
+
     side_df = df[df["side"] == side].reset_index(drop=True)
     if len(side_df) < 3:
         print(f"Skipping {side}: not enough players.")
@@ -199,10 +233,11 @@ def cluster_side(df, side):
         print(f"No valid clustering results for {side}.")
         return
 
-    results_df = pd.DataFrame(results).sort_values("composite_score", ascending=False)
-
-    side_dir = OUTPUT_DIR / side
-    side_dir.mkdir(parents=True, exist_ok=True)
+    results_df = pd.DataFrame(results).sort_values(
+        ["composite_score", "name"],
+        ascending=[False, True],
+        kind="mergesort",
+    )
 
     # Write top 2 per algorithm
     for method, group in results_df.groupby("method"):
@@ -217,7 +252,8 @@ def cluster_side(df, side):
 
     print(f"\n{side.upper()} clustering complete")
     print(f"Players: {len(side_df)}  |  Features: {X.shape[1]}  |  "
-          f"Bootstrap iterations: {STABILITY_N_BOOTS} ({STABILITY_RESAMPLE_FRAC:.0%} resample)")
+          f"Subsampling iterations: {STABILITY_N_BOOTS} "
+          f"({STABILITY_RESAMPLE_FRAC:.0%} without replacement)")
     print(f"Outputs written to: {side_dir}")
 
 

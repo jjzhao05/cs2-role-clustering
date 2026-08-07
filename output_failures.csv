@@ -1,0 +1,5 @@
+demo_path,error
+C:\Users\Jonathan Zhao\Documents\GitHub\cs2-role-classifier\demos\iem-atlanta-2026-pain-vs-fut-bo3_de_dust2_2.dem,"unable to find column ""official_end""; valid columns: [""start"", ""freeze_end"", ""end"", ""winner"", ""reason""]"
+C:\Users\Jonathan Zhao\Documents\GitHub\cs2-role-classifier\demos\iem-atlanta-2026-pain-vs-fut-bo3_de_nuke_2.dem,"""Required event 'round_freeze_end' is missing from the events dictionary."""
+C:\Users\Jonathan Zhao\Documents\GitHub\cs2-role-classifier\demos\iem-cologne-major-2026-stage-1-nrg-vs-big-bo3_de_dust2_2.dem,"unable to find column ""official_end""; valid columns: [""start"", ""freeze_end"", ""end"", ""winner"", ""reason""]"
+C:\Users\Jonathan Zhao\Documents\GitHub\cs2-role-classifier\demos\iem-cologne-major-2026-stage-2-b8-vs-gamerlegion-bo3_de_inferno_2.dem,"unable to find column ""official_end""; valid columns: [""start"", ""freeze_end"", ""end"", ""winner"", ""reason""]"

@@ -49,6 +49,9 @@ RATE_COLUMNS_TO_DROP = {
     "flash_assists",
     "opening_kills",
     "opening_deaths",
+    "first_contacts",
+    "first_contacts_received",
+    "first_contact_participations",
     "trade_kills",
     "traded_deaths",
     "rifle_kills",
@@ -83,7 +86,6 @@ POSITION_FEATURES = [
     "avg_distance_moved_per_round",
     "avg_distance_to_closest_teammate",
     "time_near_enemy_rate",
-    "first_contact_rate",
     "time_stationary_rate",
 ]
 
@@ -108,9 +110,28 @@ def norm_side(col_name: str) -> pl.Expr:
 def norm_name(expr: pl.Expr) -> pl.Expr:
     return (
         expr.cast(pl.Utf8)
-        .str.replace(r"^ +", "")
+        .str.strip_chars()
         .str.to_lowercase()
         .str.replace(r"^naf-fly$", "naf")
+    )
+
+
+def filter_enemy_events(
+    df: pl.DataFrame,
+    attacker: str,
+    attacker_side: str,
+    victim: str,
+    victim_side: str,
+) -> pl.DataFrame:
+    """Keep events between two named players on opposing valid sides."""
+    attacker_side_expr = norm_side(attacker_side)
+    victim_side_expr = norm_side(victim_side)
+    return df.filter(
+        norm_name(pl.col(attacker)).str.len_chars().gt(0)
+        & norm_name(pl.col(victim)).str.len_chars().gt(0)
+        & attacker_side_expr.is_in(["ct", "t"])
+        & victim_side_expr.is_in(["ct", "t"])
+        & (attacker_side_expr != victim_side_expr)
     )
 
 
@@ -196,7 +217,6 @@ def build_position_stats(ticks: pl.DataFrame) -> pl.DataFrame:
         "avg_distance_moved_per_round": pl.Float64,
         "avg_distance_to_closest_teammate": pl.Float64,
         "time_near_enemy_rate": pl.Float64,
-        "first_contact_rate": pl.Float64,
         "time_stationary_rate": pl.Float64,
         "opening_displacement_20s": pl.Float64,
     }
@@ -269,21 +289,6 @@ def build_position_stats(ticks: pl.DataFrame) -> pl.DataFrame:
             pl.mean("avg_tick_enemy_dist").alias("avg_distance_to_enemy"),
             pl.mean("near_enemy").alias("time_near_enemy_rate"),
         )
-    )
-
-    first_contact = (
-        enemy_tick.with_columns(
-            pl.min("nearest_enemy_dist")
-            .over(["round_id", "tick", "side"])
-            .alias("team_min_enemy_dist")
-        )
-        .with_columns(
-            (pl.col("nearest_enemy_dist") == pl.col("team_min_enemy_dist"))
-            .cast(pl.Float64)
-            .alias("is_first_contact")
-        )
-        .group_by(SIDE_KEYS)
-        .agg(pl.mean("is_first_contact").alias("first_contact_rate"))
     )
 
     team_centroid = (
@@ -377,7 +382,6 @@ def build_position_stats(ticks: pl.DataFrame) -> pl.DataFrame:
 
     for features in [
         enemy_features,
-        first_contact,
         centroid_features,
         teammate_features,
         movement_features,
@@ -508,6 +512,21 @@ def build_kill_stats(kills: pl.DataFrame) -> pl.DataFrame:
     assister_side = pick_col(kills, ["assister_side"], required=False)
     assisted_flash = pick_col(kills, ["assistedflash"], required=False)
     weapon = pick_col(kills, ["weapon", "weapon_name", "weapon_class"], required=False)
+    kills = filter_enemy_events(kills, attacker, attacker_side, victim, victim_side)
+
+    if kills.is_empty():
+        return empty(
+            {
+                "player_name": pl.Utf8,
+                "side": pl.Utf8,
+                "kills": pl.Int64,
+                "deaths": pl.Int64,
+                "assists": pl.Int64,
+                "flash_assists": pl.Int64,
+                "rifle_kills": pl.Int64,
+                "awp_kills": pl.Int64,
+            }
+        )
 
     pieces = [
         kills.select(
@@ -584,6 +603,18 @@ def build_opening_and_multi_stats(kills: pl.DataFrame) -> pl.DataFrame:
     attacker_side = pick_col(kills, ["attacker_side", "killer_side"])
     victim = pick_col(kills, ["victim_name", "player_name"])
     victim_side = pick_col(kills, ["victim_side", "player_side"])
+    kills = filter_enemy_events(kills, attacker, attacker_side, victim, victim_side)
+
+    if kills.is_empty():
+        return empty(
+            {
+                "player_name": pl.Utf8,
+                "side": pl.Utf8,
+                "opening_kills": pl.Int64,
+                "opening_deaths": pl.Int64,
+                "multi_kill_rounds": pl.Int64,
+            }
+        )
 
     first_kills = (
         kills.sort([round_col, tick_col]).unique(subset=[round_col], keep="first")
@@ -635,9 +666,9 @@ def build_trade_stats(kills: pl.DataFrame) -> pl.DataFrame:
         kills.select(
             pl.col("round_num").cast(pl.Int64),
             pl.col("tick").cast(pl.Int64),
-            pl.col("attacker_name").cast(pl.Utf8),
+            norm_name(pl.col("attacker_name")).alias("attacker_name"),
             norm_side("attacker_side").alias("attacker_side"),
-            pl.col("victim_name").cast(pl.Utf8),
+            norm_name(pl.col("victim_name")).alias("victim_name"),
             norm_side("victim_side").alias("victim_side"),
             pl.col("was_traded").fill_null(False).cast(pl.Boolean),
         )
@@ -721,6 +752,11 @@ def build_damage_stats(damages: pl.DataFrame) -> pl.DataFrame:
 
     pieces = []
 
+    if all([attacker, attacker_side, victim, victim_side]):
+        damages = filter_enemy_events(damages, attacker, attacker_side, victim, victim_side)
+    else:
+        return empty(schema)
+
     if attacker and attacker_side and dmg:
         pieces.append(
             damages.select(
@@ -759,6 +795,107 @@ def build_damage_stats(damages: pl.DataFrame) -> pl.DataFrame:
         .group_by(SIDE_KEYS)
         .sum()
     )
+
+
+def build_first_contact_stats(damages: pl.DataFrame) -> pl.DataFrame:
+    """Count each round's first direct enemy-damage interaction.
+
+    A first contact is the earliest positive health-damage event between opponents
+    in a round after excluding grenade and fire damage when weapon information is
+    available. The attacker initiates the contact, the victim receives it, and
+    both players participate. Ties on the same tick are resolved by source-event
+    order so each round contributes exactly one contact.
+    """
+    schema = {
+        "player_name": pl.Utf8,
+        "side": pl.Utf8,
+        "first_contacts": pl.Int64,
+        "first_contacts_received": pl.Int64,
+        "first_contact_participations": pl.Int64,
+    }
+    if damages.is_empty():
+        return empty(schema)
+
+    round_col = pick_col(
+        damages,
+        ["round_num", "round_number", "round", "round_index"],
+        required=False,
+    )
+    tick_col = pick_col(damages, ["tick", "game_tick", "event_tick"], required=False)
+    attacker = pick_col(damages, ["attacker_name", "attacker"], required=False)
+    attacker_side = pick_col(damages, ["attacker_side"], required=False)
+    victim = pick_col(damages, ["victim_name", "victim"], required=False)
+    victim_side = pick_col(damages, ["victim_side"], required=False)
+    dmg = pick_col(
+        damages,
+        ["dmg_health", "hp_damage", "health_damage", "damage", "damage_health"],
+        required=False,
+    )
+    weapon = pick_col(damages, ["weapon", "weapon_name"], required=False)
+
+    required = [round_col, tick_col, attacker, attacker_side, victim, victim_side, dmg]
+    if not all(required):
+        return empty(schema)
+
+    selected = [
+        norm_name(pl.col(attacker)).alias("attacker_name"),
+        norm_side(attacker_side).alias("attacker_side"),
+        norm_name(pl.col(victim)).alias("victim_name"),
+        norm_side(victim_side).alias("victim_side"),
+        pl.col(round_col).cast(pl.Int64).alias("round_id"),
+        pl.col(tick_col).cast(pl.Int64).alias("tick"),
+        pl.col(dmg).cast(pl.Float64).fill_null(0.0).alias("health_damage"),
+    ]
+    if weapon:
+        selected.append(
+            pl.col(weapon)
+            .cast(pl.Utf8)
+            .str.to_lowercase()
+            .str.replace(r"^weapon_", "")
+            .alias("weapon")
+        )
+
+    direct_damage = (
+        damages.with_row_index("event_order")
+        .select(pl.col("event_order"), *selected)
+        .filter(
+            pl.col("attacker_name").is_not_null()
+            & pl.col("victim_name").is_not_null()
+            & pl.col("attacker_side").is_in(["ct", "t"])
+            & pl.col("victim_side").is_in(["ct", "t"])
+            & (pl.col("attacker_side") != pl.col("victim_side"))
+            & (pl.col("attacker_name") != pl.col("victim_name"))
+            & (pl.col("health_damage") > 0)
+        )
+    )
+    if weapon:
+        direct_damage = direct_damage.filter(
+            ~pl.col("weapon").fill_null("").is_in(list(UTIL_DAMAGE_WEAPONS))
+        )
+
+    first_events = (
+        direct_damage.sort(["round_id", "tick", "event_order"])
+        .unique(subset=["round_id"], keep="first", maintain_order=True)
+    )
+    if first_events.is_empty():
+        return empty(schema)
+
+    initiators = first_events.select(
+        pl.col("attacker_name").alias("player_name"),
+        pl.col("attacker_side").alias("side"),
+        pl.lit(1, dtype=pl.Int64).alias("first_contacts"),
+        pl.lit(0, dtype=pl.Int64).alias("first_contacts_received"),
+        pl.lit(1, dtype=pl.Int64).alias("first_contact_participations"),
+    )
+    receivers = first_events.select(
+        pl.col("victim_name").alias("player_name"),
+        pl.col("victim_side").alias("side"),
+        pl.lit(0, dtype=pl.Int64).alias("first_contacts"),
+        pl.lit(1, dtype=pl.Int64).alias("first_contacts_received"),
+        pl.lit(1, dtype=pl.Int64).alias("first_contact_participations"),
+    )
+
+    return pl.concat([initiators, receivers], how="vertical").group_by(SIDE_KEYS).sum()
 
 
 def build_grenade_stats(shots: pl.DataFrame) -> pl.DataFrame:
@@ -821,6 +958,11 @@ def add_rates(df: pl.DataFrame) -> pl.DataFrame:
         ("smokes_thrown", "smokes_per_round"),
         ("fire_nades_thrown", "fire_nades_per_round"),
         ("decoys_thrown", "decoys_per_round"),
+        ("opening_kills", "opening_kill_rate"),
+        ("opening_deaths", "opening_death_rate"),
+        ("first_contacts", "first_contact_rate"),
+        ("first_contacts_received", "first_contact_received_rate"),
+        ("first_contact_participations", "first_contact_participation_rate"),
     ]:
         if {raw, "rounds_played"} <= cols:
             exprs.append(rate(raw, "rounds_played", out))
@@ -837,12 +979,15 @@ def add_rates(df: pl.DataFrame) -> pl.DataFrame:
             .alias("survival_rate")
         )
 
-    if {"opening_kills", "kills"} <= cols:
-        exprs.append(rate("opening_kills", "kills", "opening_kill_rate"))
-    if {"opening_deaths", "deaths"} <= cols:
-        exprs.append(rate("opening_deaths", "deaths", "opening_death_rate"))
     if {"opening_kills", "opening_deaths"} <= cols:
         attempts = pl.col("opening_kills") + pl.col("opening_deaths")
+        if "rounds_played" in cols:
+            exprs.append(
+                pl.when(pl.col("rounds_played") > 0)
+                .then(attempts / pl.col("rounds_played"))
+                .otherwise(0.0)
+                .alias("opening_duel_attempt_rate")
+            )
         exprs.append(
             pl.when(attempts > 0)
             .then(pl.col("opening_kills") / attempts)
@@ -920,6 +1065,7 @@ def parse_single_demo(demo_path: Path) -> pl.DataFrame:
         build_kill_stats(kills),
         build_trade_stats(kills),
         build_opening_and_multi_stats(kills),
+        build_first_contact_stats(damages),
         build_damage_stats(damages),
         build_grenade_stats(shots),
         positions,
@@ -956,7 +1102,10 @@ def combine_demo_results(frames: Iterable[pl.DataFrame]) -> pl.DataFrame:
     for col in weighted_cols:
         if {col, "rounds_played"} <= set(work.columns):
             work = work.with_columns(
-                (pl.col(col).fill_null(0.0) * pl.col("rounds_played").fill_null(0)).alias(f"_{col}_weighted")
+                (pl.col(col).fill_null(0.0) * pl.col("rounds_played").fill_null(0))
+                .alias(f"_{col}_weighted"),
+                ((pl.col(col).fill_null(0.0) ** 2) * pl.col("rounds_played").fill_null(0))
+                .alias(f"_{col}_weighted_sq"),
             )
 
     sum_cols = [
@@ -970,15 +1119,16 @@ def combine_demo_results(frames: Iterable[pl.DataFrame]) -> pl.DataFrame:
     std_cols = [c for c in weighted_cols if c in work.columns]
 
     agg_exprs = [pl.sum(c).alias(c) for c in sum_cols]
+    agg_exprs.append(pl.len().alias("demo_count"))
     agg_exprs.extend(
         pl.sum(f"_{c}_weighted").alias(f"_{c}_weighted")
         for c in weighted_cols
         if f"_{c}_weighted" in work.columns
     )
-    # Std aggregations 
     agg_exprs.extend(
-        pl.std(c).fill_null(0.0).alias(f"{c}_std")
-        for c in std_cols
+        pl.sum(f"_{c}_weighted_sq").alias(f"_{c}_weighted_sq")
+        for c in weighted_cols
+        if f"_{c}_weighted_sq" in work.columns
     )
 
     combined = work.group_by(SIDE_KEYS).agg(agg_exprs)
@@ -992,6 +1142,25 @@ def combine_demo_results(frames: Iterable[pl.DataFrame]) -> pl.DataFrame:
 
     if exprs:
         combined = combined.with_columns(exprs)
+
+    # Round-weighted population standard deviation across demos. This avoids
+    # giving a short map the same influence as a long map.
+    std_exprs: list[pl.Expr] = []
+    for col in std_cols:
+        weighted_sq = f"_{col}_weighted_sq"
+        if {weighted_sq, "rounds_played", col} <= set(combined.columns):
+            variance = (
+                pl.col(weighted_sq) / pl.col("rounds_played")
+                - pl.col(col) ** 2
+            ).clip(lower_bound=0.0)
+            std_exprs.append(
+                pl.when(pl.col("rounds_played") > 0)
+                .then(variance.sqrt())
+                .otherwise(0.0)
+                .alias(f"{col}_std")
+            )
+    if std_exprs:
+        combined = combined.with_columns(std_exprs)
 
     combined = combined.drop([c for c in combined.columns if c.startswith("_")])
     return keep_rate_features_only(add_rates(combined))
@@ -1013,6 +1182,7 @@ def sort_output_columns(df: pl.DataFrame) -> pl.DataFrame:
         "trade_participation",
         "opening_kill_rate",
         "opening_death_rate",
+        "opening_duel_attempt_rate",
         "opening_duel_success",
         "multi_kill_rate",
         "rifle_kill_share",
@@ -1030,10 +1200,12 @@ def sort_output_columns(df: pl.DataFrame) -> pl.DataFrame:
         "avg_distance_to_closest_teammate",
         "time_near_enemy_rate",
         "first_contact_rate",
+        "first_contact_received_rate",
+        "first_contact_participation_rate",
         "time_stationary_rate",
     ]
 
-    ordered: list[str] = ["player_name", "side", "rounds_played"]
+    ordered: list[str] = ["player_name", "side", "rounds_played", "demo_count"]
     for col in metric_order:
         if col in df.columns:
             ordered.append(col)
@@ -1051,7 +1223,16 @@ def main() -> None:
     parser.add_argument("input_path", nargs="?", default=None)
     parser.add_argument("output_csv", nargs="?", default=None)
     parser.add_argument("--test", dest="test_output_csv", default=None)
+    parser.add_argument(
+        "--max-failure-rate",
+        type=float,
+        default=0.02,
+        help="Fail after writing outputs if more than this fraction of demos fail (default: 0.02).",
+    )
     args = parser.parse_args()
+
+    if not 0 <= args.max_failure_rate <= 1:
+        raise ValueError("--max-failure-rate must be between 0 and 1.")
 
     test_mode = args.test_output_csv is not None
     if test_mode:
@@ -1069,6 +1250,7 @@ def main() -> None:
     print(f"[info] found {len(demo_files)} demos to process")
 
     frames: list[pl.DataFrame] = []
+    failures: list[dict[str, str]] = []
     success_count = 0
     total = len(demo_files)
 
@@ -1081,15 +1263,16 @@ def main() -> None:
             for demo_path in demo_files
         }
 
-        for future in as_completed(future_to_path):
+        for completed_count, future in enumerate(as_completed(future_to_path), start=1):
             demo_path = future_to_path[future]
-            print(f"[{success_count + 1}/{total}] finished: {demo_path.name}")
+            print(f"[{completed_count}/{total}] finished: {demo_path.name}")
             try:
                 frames.append(future.result())
                 success_count += 1
                 print(f"[ok] {demo_path.name}")
             except Exception as exc:
                 print(f"[skip] {demo_path.name}: {exc}")
+                failures.append({"demo_path": str(demo_path), "error": str(exc)})
 
     if not frames:
         raise RuntimeError("No demos parsed successfully.")
@@ -1103,8 +1286,26 @@ def main() -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     final_df.write_csv(output_path)
 
+    failure_path = output_path.with_name(f"{output_path.stem}_failures.csv")
+    if failures:
+        failure_df = pl.DataFrame(failures).select(
+            pl.col("demo_path").cast(pl.Utf8),
+            pl.col("error").cast(pl.Utf8),
+        )
+    else:
+        failure_df = empty({"demo_path": pl.Utf8, "error": pl.Utf8})
+    failure_df.write_csv(failure_path)
+
     print(f"[done] parsed {success_count}/{len(demo_files)} demos successfully")
     print(f"[done] output written to: {output_path.resolve()}")
+    print(f"[done] failure manifest written to: {failure_path.resolve()}")
+
+    failure_rate = len(failures) / total if total else 0.0
+    if failure_rate > args.max_failure_rate:
+        raise RuntimeError(
+            f"Demo failure rate {failure_rate:.1%} exceeds allowed "
+            f"{args.max_failure_rate:.1%}; see {failure_path}."
+        )
 
 
 if __name__ == "__main__":

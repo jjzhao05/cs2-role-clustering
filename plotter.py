@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+from feature_config import MODEL_EXCLUDE_COLUMNS, RESULT_ARTIFACT_COLUMNS
+
 # ---------------------------------------------------------------------------
 # Global font sizes
 # ---------------------------------------------------------------------------
@@ -28,7 +30,10 @@ TOP_N_PER_ALGORITHM = 2
 
 RADAR_FEATURES = [
     "opening_kill_rate",
+    "opening_death_rate",
     "opening_duel_success",
+    "first_contact_rate",
+    "first_contact_received_rate",
     "trade_kill_rate",
     "death_traded_rate",
     "flash_assists_per_round",
@@ -36,15 +41,10 @@ RADAR_FEATURES = [
     "awp_kill_share",
     "rifle_kill_share",
     "multi_kill_rate",
-    "grenades_per_round",
+    "smokes_per_round",
 ]
 
-_DOMINANCE_EXCLUDE = {
-    "pc1",
-    "pc2",
-    "cluster",
-    "rounds_played",
-}
+_DOMINANCE_EXCLUDE = MODEL_EXCLUDE_COLUMNS | RESULT_ARTIFACT_COLUMNS
 
 _STD_SUFFIX = "_std"
 
@@ -75,7 +75,11 @@ def get_top_models(side: str, top_n: int = TOP_N_PER_ALGORITHM):
         top = (
             group
             .dropna(subset=["composite_score"])
-            .sort_values("composite_score", ascending=False)
+            .sort_values(
+                ["composite_score", "name"],
+                ascending=[False, True],
+                kind="mergesort",
+            )
             .head(top_n)
         )
 
@@ -96,7 +100,7 @@ def build_cluster_summary(players: pd.DataFrame):
 
     numeric_cols = players.select_dtypes(include="number").columns.tolist()
 
-    exclude = {"pc1", "pc2", "cluster"}
+    exclude = MODEL_EXCLUDE_COLUMNS | RESULT_ARTIFACT_COLUMNS
 
     feature_cols = [c for c in numeric_cols if c not in exclude]
 
