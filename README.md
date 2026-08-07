@@ -44,17 +44,6 @@ Because there is no definitive label set for CS2 roles for all players, model qu
 
 External validation uses expert-curated role annotations from [NER0cs's Positions Database](https://public.tableau.com/app/profile/harry.richards4213/viz/PositionsDatabaseNER0cs/PositionsDatabaseNER0cs), maintained by Harry "NER0cs" Richards, a Counter-Strike analyst and writer for HLTV.org. The database contains manually labeled roles for prominent professional players in top-tier Counter-Strike 2. These labels are treated as expert reference annotations rather than absolute ground truth.
 
-<table>
-  <tr>
-    <td width="50%">
-      <img src="plots/ct/composite_scores.png" alt="CT-side composite model scores">
-    </td>
-    <td width="50%">
-      <img src="plots/t/composite_scores.png" alt="T-side composite model scores">
-    </td>
-  </tr>
-</table>
-
 ## Key Results
 #### CT Side
 
@@ -94,6 +83,27 @@ The model also identified an IGL-enriched subgroup characterized by stronger uti
 <p align="left">
     <img src="plots/t/kmeans_k4_zscore_heatmap.png" alt="T-side KMeans k=4 cluster z-score heatmap" width="90%">
 </p>
+
+## Ablation Analysis
+
+The ablation experiments hold the number of clusters constant at k = 3 for CT and k = 4 for T. They include removal-based tests, where one feature group is excluded from the full model, and category-only tests, where clustering uses a single feature group. Results are compared using composite score, external-label ARI, matched-sample purity, subsampling stability, and silhouette score.
+
+On the CT side, removing trading or utility features has little effect on external role agreement. Removing positioning and movement features causes the largest decline in external-label ARI, purity, and composite score, indicating that the Rotator/Anchor split depends heavily on spatial behavior. On the T side, no single feature category reproduces the complete interpretation. Combat and weapon variables create strong statistical separation, while positioning, contact, utility, and teamwork features contribute different parts of the role structure.
+
+<table>
+  <tr>
+    <td width="50%">
+      <a href="plots/ablations/ct/ct_composite_score_bar.png">
+        <img src="plots/ablations/ct/ct_composite_score_bar.png" alt="CT-side ablation composite scores">
+      </a>
+    </td>
+    <td width="50%">
+      <a href="plots/ablations/t/t_composite_score_bar.png">
+        <img src="plots/ablations/t/t_composite_score_bar.png" alt="T-side ablation composite scores">
+      </a>
+    </td>
+  </tr>
+</table>
 
 ## Main Findings
 
