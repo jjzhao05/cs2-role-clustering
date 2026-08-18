@@ -1,9 +1,11 @@
+import random
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+
 
 st.set_page_config(
     page_title="CS2 Role Discovery",
@@ -12,6 +14,7 @@ st.set_page_config(
 )
 
 ROOT = Path(__file__).parent
+
 
 INK_PRIMARY = "#0b0b0b"
 INK_SECONDARY = "#52514e"
@@ -271,10 +274,6 @@ def styled_fig(fig: go.Figure, height: int = 420) -> go.Figure:
     return fig
 
 
-# ---------------------------------------------------------------------------
-# Header
-# ---------------------------------------------------------------------------
-
 st.title("Unsupervised Role Discovery in Professional CS2")
 st.markdown(
     "<div class='finding-line'>Can professional Counter-Strike 2 player roles be discovered "
@@ -295,12 +294,6 @@ st.markdown(
 )
 st.divider()
 
-# ---------------------------------------------------------------------------
-# Top-level sections: Player Explorer stands alone. The other three views
-# (which all analyze the pipeline/model output rather than one player) live
-# together under a second section.
-# ---------------------------------------------------------------------------
-
 tab_player, tab_pipeline = st.tabs(["Player Explorer", "Clusters, Models & Ablations"])
 
 with tab_pipeline:
@@ -308,9 +301,6 @@ with tab_pipeline:
         ["Clusters & Roles", "Model Comparison", "Feature Ablations"]
     )
 
-# ---------------------------------------------------------------------------
-# Tab: Player Explorer
-# ---------------------------------------------------------------------------
 
 with tab_player:
     left, right = st.columns([1, 2])
@@ -319,8 +309,21 @@ with tab_player:
         side = st.radio("Side", ["ct", "t"], format_func=lambda s: SIDE_LABEL[s], horizontal=True, key="player_side")
         df = load_player_clusters(side)
         players = sorted(df["player_name"].dropna().unique().tolist())
-        default_idx = players.index("device") if "device" in players else 0
-        player = st.selectbox("Player", players, index=default_idx)
+
+        # Keep the selection valid when the side switches out from under it,
+        # and seed a sensible default on first load.
+        if st.session_state.get("player_select") not in players:
+            st.session_state["player_select"] = "device" if "device" in players else players[0]
+
+        def _pick_random_player():
+            st.session_state["player_select"] = random.choice(players)
+
+        sel_col, btn_col = st.columns([3, 1])
+        with sel_col:
+            player = st.selectbox("Player", players, key="player_select")
+        with btn_col:
+            st.write("")
+            st.button("Random", on_click=_pick_random_player, width='stretch')
 
     row = df[df["player_name"] == player].iloc[0]
     role = row["role"]
@@ -429,9 +432,6 @@ with tab_player:
         st.plotly_chart(styled_fig(fig2, height=380), width='stretch', config=PLOTLY_CONFIG)
         st.caption("PCA projection of all clustered features. This player is highlighted against their side's full cluster map.")
 
-# ---------------------------------------------------------------------------
-# Tab: Clusters & Roles
-# ---------------------------------------------------------------------------
 
 with tab_clusters:
     side = st.radio("Side", ["ct", "t"], format_func=lambda s: SIDE_LABEL[s], horizontal=True, key="cluster_side")
@@ -519,9 +519,6 @@ with tab_clusters:
     st.plotly_chart(styled_fig(fig4, height=340), width='stretch', config=PLOTLY_CONFIG)
     st.caption(f"Blue = below the {avg_label}, red = above. Built from the same per-player features used for clustering.")
 
-# ---------------------------------------------------------------------------
-# Tab: Model Comparison
-# ---------------------------------------------------------------------------
 
 with tab_models:
     st.subheader("KMeans vs. Gaussian Mixture vs. HDBSCAN")
@@ -583,9 +580,6 @@ with tab_models:
         "that are very stable but too coarse to separate individual roles."
     )
 
-# ---------------------------------------------------------------------------
-# Tab: Feature Ablations
-# ---------------------------------------------------------------------------
 
 with tab_ablation:
     st.subheader("Which feature groups actually drive the role structure?")
