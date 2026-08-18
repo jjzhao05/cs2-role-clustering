@@ -361,8 +361,7 @@ with tab_player:
             if expert_role in ("Mixed", "Flex"):
                 st.caption(
                     f"Expert reference label ({SIDE_LABEL[side]}): **{expert_role}**. "
-                    "The expert annotation itself doesn't commit this player to one role, "
-                    "so this isn't scored as a cluster match or mismatch."
+                    "Not scored: the expert label itself is ambiguous."
                 )
             else:
                 match = "matches" if row["role_match"] else "differs from"
