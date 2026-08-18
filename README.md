@@ -7,6 +7,8 @@ The project compares KMeans, Gaussian Mixture Models, and HDBSCAN using internal
 
 The full report can be read [here](report.pdf)
 
+Explore the results interactively in the live [Streamlit dashboard](https://cs2-role-clustering-3qq6f6jdtot762u6jjn979.streamlit.app/).
+
 ## Research Question
 
 Can professional CS2 player roles be discovered from behavioral and positional gameplay statistics using unsupervised learning?
