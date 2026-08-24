@@ -42,6 +42,18 @@ ROLE_SYMBOL = {
     "Spacetaker (IGL)": "circle",
 }
 METHOD_COLOR = {"kmeans": "#2a78d6", "gmm": "#eb6834", "hdbscan": "#1baf7a"}
+
+# ISO 3166-1 alpha-2 codes for the countries in Roles.csv, used to build flag emoji.
+COUNTRY_CODE = {
+    "Argentina": "AR", "Belarus": "BY", "Bosnia and Herzegovina": "BA", "Brazil": "BR",
+    "Bulgaria": "BG", "Canada": "CA", "Chile": "CL", "China": "CN", "Czech Republic": "CZ",
+    "Denmark": "DK", "Estonia": "EE", "Finland": "FI", "France": "FR", "Germany": "DE",
+    "Guatemala": "GT", "Hungary": "HU", "Israel": "IL", "Kazakhstan": "KZ", "Kosovo": "XK",
+    "Latvia": "LV", "Lithuania": "LT", "Mongolia": "MN", "Poland": "PL", "Romania": "RO",
+    "Russia": "RU", "Slovakia": "SK", "South Africa": "ZA", "Spain": "ES", "Sweden": "SE",
+    "Turkey": "TR", "Ukraine": "UA", "United Kingdom": "GB", "United States": "US",
+    "Uruguay": "UY",
+}
 SEQ_BLUE = "#2a78d6"
 MUTED_BAR = "#c3c2b7"
 
@@ -310,25 +322,41 @@ with tab_pipeline:
     )
 
 
+def country_flag_html(country: str) -> str:
+    """Flag image for a country. Windows browsers do not draw flag emoji, so this
+    uses flagcdn.com and falls back to the country code if the image cannot load."""
+    code = COUNTRY_CODE.get(country)
+    if not code:
+        return ""
+    # Drawn as a background image so an offline run shows an empty box rather than
+    # a broken-image icon.
+    return (
+        f"<span style=\"display:inline-block;width:24px;height:18px;border-radius:2px;"
+        f"border:1px solid {BORDER};background-size:cover;background-position:center;"
+        f"background-image:url('https://flagcdn.com/h24/{code.lower()}.png');\"></span>"
+    )
+
+
 def player_info_html(player: str) -> str:
     """Player name + team/country badges, shown once above both side panels."""
     roles = load_roles()
     row = roles[roles["player_name"].astype(str).str.strip() == player]
     badge_style = (
-        f"display:inline-block;background:{PAGE};border:1px solid {BORDER};border-radius:6px;"
-        f"padding:2px 8px;font-size:0.82rem;color:{INK_SECONDARY};white-space:nowrap;"
+        f"display:inline-flex;align-items:center;gap:8px;background:{PAGE};"
+        f"border:1px solid {BORDER};border-radius:8px;padding:5px 12px;"
+        f"font-size:1rem;color:{INK_PRIMARY};white-space:nowrap;"
     )
     badges = ""
     if not row.empty:
-        for label, value in (("Team", row.iloc[0]["team"]), ("Country", row.iloc[0]["country"])):
-            if isinstance(value, str):
-                badges += (
-                    f"<span style='{badge_style}'><span style='color:{INK_MUTED};'>{label}</span>"
-                    f"&nbsp;<b>{value}</b></span>"
-                )
+        team = row.iloc[0]["team"]
+        country = row.iloc[0]["country"]
+        if isinstance(team, str):
+            badges += f"<span style='{badge_style}'><b>{team}</b></span>"
+        if isinstance(country, str):
+            badges += f"<span style='{badge_style}'>{country_flag_html(country)}<b>{country}</b></span>"
     return (
-        "<div style='display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:10px 0 4px;'>"
-        f"<span style='color:{INK_PRIMARY};font-size:1.1rem;font-weight:700;'>{player}</span>"
+        "<div style='display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin:12px 0 6px;'>"
+        f"<span style='color:{INK_PRIMARY};font-size:1.5rem;font-weight:700;'>{player}</span>"
         f"{badges}</div>"
     )
 
@@ -449,7 +477,6 @@ with tab_player:
 
     st.markdown(player_info_html(player), unsafe_allow_html=True)
 
-    st.caption("Both sides are shown together: CT on the left, T on the right. Roles come from each side's best KMeans model.")
     st.write("")
 
     ct_col, t_col = st.columns(2)
