@@ -327,7 +327,7 @@ def player_info_html(player: str) -> str:
                     f"&nbsp;<b>{value}</b></span>"
                 )
     return (
-        "<div style='display:flex;align-items:center;flex-wrap:wrap;gap:8px;'>"
+        "<div style='display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:10px 0 4px;'>"
         f"<span style='color:{INK_PRIMARY};font-size:1.1rem;font-weight:700;'>{player}</span>"
         f"{badges}</div>"
     )
@@ -441,15 +441,13 @@ with tab_player:
     def _pick_random_player():
         st.session_state["player_select"] = random.choice(players)
 
-    sel_col, btn_col, info_col = st.columns([2, 1, 3])
+    sel_col, btn_col, _spacer = st.columns([2, 1, 3], vertical_alignment="bottom")
     with sel_col:
         player = st.selectbox("Player", players, key="player_select")
     with btn_col:
-        st.write("")
         st.button("Random", on_click=_pick_random_player, width='stretch')
-    with info_col:
-        st.write("")
-        st.markdown(player_info_html(player), unsafe_allow_html=True)
+
+    st.markdown(player_info_html(player), unsafe_allow_html=True)
 
     st.caption("Both sides are shown together: CT on the left, T on the right. Roles come from each side's best KMeans model.")
     st.write("")
