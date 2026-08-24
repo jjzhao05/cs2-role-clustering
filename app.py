@@ -295,7 +295,7 @@ st.write("")
 st.markdown(
     "<div class='finding-line'>"
     "<b>Main finding:</b> AWPers are highly separable on both sides. CT riflers split into a "
-    "meaningful Rotator / Anchor structure driven mainly by positioning. T-side Lurkers separate "
+    "meaningful Rotator/Anchor structure driven mainly by positioning. T-side Lurkers separate "
     "cleanly, while Spacetakers divide into an aggressive group and a utility-heavy, IGL group."
     "</div>",
     unsafe_allow_html=True,
@@ -439,7 +439,7 @@ with tab_player:
         st.write("")
         st.button("Random", on_click=_pick_random_player, width='stretch')
 
-    st.caption("Both sides are shown together: CT on the left, T on the right. Roles come from each side's best KMeans model.")
+    st.caption("Roles come from each side's best KMeans model.")
     st.write("")
 
     ct_col, t_col = st.columns(2)
@@ -449,8 +449,8 @@ with tab_player:
         render_player_side("t", player)
 
     st.caption(
-        "Bars: top 10 features by that side's model importance, grouped by stat category — positive means above "
-        "that side's average. Scatter: PCA projection of all clustered features, with this player highlighted."
+        "Bars: top 10 features by that side's model importance, grouped by stat category"
+        "Scatter: PCA projection of all clustered features."
     )
 
 
@@ -480,7 +480,7 @@ with tab_clusters:
     if method == "hdbscan":
         st.caption(
             "HDBSCAN chooses its own cluster count and leaves low-density players unassigned "
-            "(shown as a noise group). It converges to a broad AWPer / everyone-else split."
+            "(shown as a noise group). It converges to a broad AWPer/rifler split."
         )
 
     cols = st.columns(len(order))
@@ -568,9 +568,9 @@ with tab_clusters:
 with tab_models:
     st.subheader("KMeans vs. Gaussian Mixture vs. HDBSCAN")
     st.caption(
-        "Composite score blends internal cluster quality (silhouette, Davies-Bouldin) "
+        "Composite score combines internal cluster quality (silhouette, Davies-Bouldin) "
         "and subsampling stability. "
-        "The best-scoring configuration per method is shown for each side — the same configurations "
+        "The best-scoring configuration per method is shown for each side"
         "you can inspect cluster-by-cluster in the Clusters & Roles tab."
     )
 
@@ -622,7 +622,7 @@ with tab_models:
     )
     st.caption(
         "KMeans produced the most interpretable, best-scoring role structures on both sides. "
-        "GMM was less stable across subsamples. HDBSCAN converged to broad two-cluster solutions "
+        "GMM was less stable across subsampling. HDBSCAN converged to two-cluster solutions "
         "that are very stable but too coarse to separate individual roles."
     )
 
@@ -630,7 +630,7 @@ with tab_models:
 with tab_ablation:
     st.subheader("Which feature groups actually drive the role structure?")
     st.caption(
-        "Each bar is a full re-clustering with one feature group removed (or isolated), "
+        "Each bar is a full re-clustering with one feature group removed or isolated, "
         "holding k fixed at the side's best value. 'full' is the baseline model using every feature group."
     )
 
@@ -648,7 +648,7 @@ with tab_ablation:
     )
     fig.update_layout(xaxis_title="Composite score", yaxis_title=None)
     st.plotly_chart(styled_fig(fig, height=520), width='stretch', config=PLOTLY_CONFIG, key="ablation_chart")
-    st.caption("Dark bar = the full-feature baseline. Bars below it mean that ablation hurt overall cluster quality. Bars above mean it helped.")
+    st.caption("Dark bar = the full-feature baseline model. Bars below it mean that ablation hurt overall cluster quality. Bars above mean it helped.")
 
     st.write("")
     st.subheader("Ablation detail")
@@ -680,7 +680,7 @@ with tab_ablation:
 
 st.divider()
 st.caption(
-    "Data: 463 parsed professional CS2 demos across four S-tier events, 214 players. "
+    "Data: 463 demos, 214 players. "
     "External reference labels from NER0cs's Positions Database (HLTV.org). "
-    "This dashboard reads only precomputed pipeline outputs. No demo parsing or model fitting runs here."
+    "This dashboard reads only precomputed pipeline outputs."
 )
