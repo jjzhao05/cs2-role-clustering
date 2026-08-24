@@ -295,7 +295,7 @@ st.write("")
 st.markdown(
     "<div class='finding-line'>"
     "<b>Main finding:</b> AWPers are highly separable on both sides. CT riflers split into a "
-    "meaningful Rotator / Anchor structure driven mainly by positioning. T-side Lurkers separate "
+    "meaningful Rotator/Anchor structure driven mainly by positioning. T-side Lurkers separate "
     "cleanly, while Spacetakers divide into an aggressive group and a utility-heavy, IGL group."
     "</div>",
     unsafe_allow_html=True,
@@ -316,7 +316,7 @@ def player_info_html(player: str) -> str:
     row = roles[roles["player_name"].astype(str).str.strip() == player]
     badge_style = (
         f"display:inline-block;background:{PAGE};border:1px solid {BORDER};border-radius:6px;"
-        f"padding:2px 8px;margin-right:8px;font-size:0.82rem;color:{INK_SECONDARY};"
+        f"padding:2px 8px;font-size:0.82rem;color:{INK_SECONDARY};white-space:nowrap;"
     )
     badges = ""
     if not row.empty:
@@ -327,8 +327,9 @@ def player_info_html(player: str) -> str:
                     f"&nbsp;<b>{value}</b></span>"
                 )
     return (
-        f"<div style='color:{INK_PRIMARY};font-size:1.1rem;font-weight:700;margin-bottom:6px;'>{player}</div>"
-        f"<div>{badges}</div>"
+        "<div style='display:flex;align-items:center;flex-wrap:wrap;gap:8px;'>"
+        f"<span style='color:{INK_PRIMARY};font-size:1.1rem;font-weight:700;'>{player}</span>"
+        f"{badges}</div>"
     )
 
 
@@ -460,7 +461,7 @@ with tab_player:
         render_player_side("t", player)
 
     st.caption(
-        "Bars: top 10 features by that side's model importance, grouped by stat category — positive means above "
+        "Bars: top 10 features by that side's model importance, grouped by stat category. Positive means above "
         "that side's average. Scatter: PCA projection of all clustered features, with this player highlighted."
     )
 
@@ -491,7 +492,7 @@ with tab_clusters:
     if method == "hdbscan":
         st.caption(
             "HDBSCAN chooses its own cluster count and leaves low-density players unassigned "
-            "(shown as a noise group). It converges to a broad AWPer / everyone-else split."
+            "(shown as a noise group). It converges to a broad AWPer/everyone-else split."
         )
 
     cols = st.columns(len(order))
@@ -568,7 +569,7 @@ with tab_clusters:
             colorscale=[[0, "#0d366b"], [0.5, SURFACE], [1, "#e34948"]],
             zmid=0,
             colorbar=dict(title="z-score"),
-            hovertemplate="%{y} / %{x}: %{z:.2f}<extra></extra>",
+            hovertemplate="%{y}/%{x}: %{z:.2f}<extra></extra>",
         )
     )
     fig4.update_layout(xaxis_tickangle=-40)
@@ -581,7 +582,7 @@ with tab_models:
     st.caption(
         "Composite score blends internal cluster quality (silhouette, Davies-Bouldin) "
         "and subsampling stability. "
-        "The best-scoring configuration per method is shown for each side — the same configurations "
+        "The best-scoring configuration per method is shown for each side. These are the same configurations "
         "you can inspect cluster-by-cluster in the Clusters & Roles tab."
     )
 
