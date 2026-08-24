@@ -31,6 +31,7 @@ ROLE_COLOR = {
     "Lurker": "#4a3aa7",
     "Spacetaker (Aggressive)": "#eda100",
     "Spacetaker (IGL)": "#e87ba4",
+    "Noise (unassigned)": "#a9a79d",
 }
 ROLE_SYMBOL = {
     "AWPer": "circle",
@@ -52,7 +53,14 @@ PLOTLY_CONFIG = {
     "showAxisDragHandles": False,
 }
 
-BASE_MODEL = {"ct": ("kmeans_k3", 3), "t": ("kmeans_k4", 4)}
+# Best-scoring configuration per method per side (top composite_score in model_scores.csv).
+MODELS = {
+    "kmeans": {"ct": "kmeans_k3", "t": "kmeans_k4"},
+    "gmm": {"ct": "gmm_k3", "t": "gmm_k4"},
+    "hdbscan": {"ct": "hdbscan_mcs10_ms1", "t": "hdbscan_mcs6_ms1"},
+}
+METHOD_LABEL = {"kmeans": "KMeans", "gmm": "Gaussian Mixture", "hdbscan": "HDBSCAN"}
+BASE_MODEL = MODELS["kmeans"]  # model used by the Player Explorer
 SIDE_LABEL = {"ct": "CT Side", "t": "T Side"}
 SIDE_AVG_LABEL = {"ct": "CT-side average", "t": "T-side average"}
 
@@ -171,12 +179,12 @@ def load_side_accuracy_labels(side: str, model_name: str) -> dict:
 
 
 @st.cache_data
-def load_player_clusters(side: str) -> pd.DataFrame:
-    model_name, _ = BASE_MODEL[side]
+def load_player_clusters(side: str, model_name: str = "") -> pd.DataFrame:
+    model_name = model_name or BASE_MODEL[side]
     path = ROOT / "outputs" / side / f"{model_name}_player_clusters.csv"
     df = pd.read_csv(path)
     labels = load_side_accuracy_labels(side, model_name)
-    df["role"] = df["cluster"].map(labels)
+    df["role"] = df["cluster"].map(labels).fillna("Noise (unassigned)")
 
     roles = load_roles()
     df["_merge_key"] = df["player_name"].astype(str).str.strip().str.lower()
@@ -190,12 +198,14 @@ def load_player_clusters(side: str) -> pd.DataFrame:
     is_ambiguous_label = df["expert_role"].isin(["Mixed", "Flex"])
     df["role_match"] = (df["role"].str.split(" (", regex=False).str[0] == df["expert_role"]).astype("boolean")
     df.loc[is_ambiguous_label, "role_match"] = pd.NA
+    # HDBSCAN leaves some players unassigned; they have no role to compare.
+    df.loc[df["role"] == "Noise (unassigned)", "role_match"] = pd.NA
     return df
 
 
 @st.cache_data
-def load_feature_importance(side: str) -> pd.DataFrame:
-    model_name, _ = BASE_MODEL[side]
+def load_feature_importance(side: str, model_name: str = "") -> pd.DataFrame:
+    model_name = model_name or BASE_MODEL[side]
     path = ROOT / "outputs" / side / f"{model_name}_feature_importance.csv"
     df = pd.read_csv(path)
     df = df.rename(columns={df.columns[0]: "feature"})
@@ -216,8 +226,8 @@ def load_ablations() -> pd.DataFrame:
 
 
 @st.cache_data
-def load_gt_accuracy(side: str, kind: str) -> pd.DataFrame:
-    model_name, _ = BASE_MODEL[side]
+def load_gt_accuracy(side: str, kind: str, model_name: str = "") -> pd.DataFrame:
+    model_name = model_name or BASE_MODEL[side]
     path = ROOT / "outputs" / side / f"{model_name}_gt_{kind}_accuracy.csv"
     df = pd.read_csv(path)
     labels = load_side_accuracy_labels(side, model_name)
@@ -277,9 +287,7 @@ def styled_fig(fig: go.Figure, height: int = 420) -> go.Figure:
 st.title("Unsupervised Role Discovery in Professional CS2")
 st.markdown(
     "<div class='finding-line'>Can professional Counter-Strike 2 player roles be discovered "
-    "from behavioral and positional gameplay statistics alone, without labels? "
-    "This dashboard explores the results: 214 pro players, clustered separately by side, "
-    "compared against expert-curated role annotations.</div>",
+    "from behavioral and positional gameplay statistics alone, without labels?</div>",
     unsafe_allow_html=True,
 )
 st.write("")
@@ -288,7 +296,7 @@ st.markdown(
     "<div class='finding-line'>"
     "<b>Main finding:</b> AWPers are highly separable on both sides. CT riflers split into a "
     "meaningful Rotator / Anchor structure driven mainly by positioning. T-side Lurkers separate "
-    "cleanly, while Spacetakers divide into an aggressive group and a utility-heavy, IGL-enriched group."
+    "cleanly, while Spacetakers divide into an aggressive group and a utility-heavy, IGL group."
     "</div>",
     unsafe_allow_html=True,
 )
@@ -302,157 +310,195 @@ with tab_pipeline:
     )
 
 
-with tab_player:
-    left, right = st.columns([1, 2])
-
-    with left:
-        side = st.radio("Side", ["ct", "t"], format_func=lambda s: SIDE_LABEL[s], horizontal=True, key="player_side")
-        df = load_player_clusters(side)
-        players = sorted(df["player_name"].dropna().unique().tolist())
-
-        # Keep the selection valid when the side switches out from under it,
-        # and seed a sensible default on first load.
-        if st.session_state.get("player_select") not in players:
-            st.session_state["player_select"] = "device" if "device" in players else players[0]
-
-        def _pick_random_player():
-            st.session_state["player_select"] = random.choice(players)
-
-        sel_col, btn_col = st.columns([3, 1])
-        with sel_col:
-            player = st.selectbox("Player", players, key="player_select")
-        with btn_col:
-            st.write("")
-            st.button("Random", on_click=_pick_random_player, width='stretch')
-
-    row = df[df["player_name"] == player].iloc[0]
-    role = row["role"]
-    team = row.get("team", None)
-    country = row.get("country", None)
-    expert_role = row.get("expert_role", None)
-
-    has_team = isinstance(team, str) and team == team
-    has_country = isinstance(country, str) and country == country
-    badge_style = (
-        f"display:inline-block;background:{PAGE};border:1px solid {BORDER};border-radius:6px;"
-        f"padding:2px 8px;margin-right:8px;font-size:0.82rem;color:{INK_SECONDARY};"
-    )
-    badges = ""
-    if has_team:
-        badges += f"<span style='{badge_style}'><span style='color:{INK_MUTED};'>Team</span>&nbsp;<b>{team}</b></span>"
-    if has_country:
-        badges += f"<span style='{badge_style}'><span style='color:{INK_MUTED};'>Country</span>&nbsp;<b>{country}</b></span>"
-
-    with right:
+def render_player_side(side: str, player: str) -> None:
+    """One side's panel for the selected player: role card, feature profile, PCA map."""
+    df = load_player_clusters(side)
+    match_rows = df[df["player_name"] == player]
+    if match_rows.empty:
         st.markdown(
             f"""
             <div class='role-card'>
                 <div style='font-size:0.85rem;color:{INK_MUTED};text-transform:uppercase;letter-spacing:0.04em;'>
                     {SIDE_LABEL[side]} role assignment
                 </div>
-                <div style='font-size:1.6rem;font-weight:700;color:{role_color(role)};'>{role}</div>
-                <div style='color:{INK_PRIMARY};font-size:1rem;font-weight:600;margin:2px 0 8px;'>{player}</div>
-                <div>{badges}</div>
+                <div style='font-size:1.1rem;font-weight:600;color:{INK_MUTED};'>No {SIDE_LABEL[side]} data</div>
+                <div style='color:{INK_SECONDARY};font-size:0.9rem;'>{player} was not clustered on this side.</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
-        if isinstance(expert_role, str) and expert_role == expert_role:
-            if expert_role in ("Mixed", "Flex"):
-                st.caption(
-                    f"Expert reference label ({SIDE_LABEL[side]}): **{expert_role}**. "
-                    "Not scored: the expert label itself is ambiguous."
-                )
-            else:
-                match = "matches" if row["role_match"] else "differs from"
-                st.caption(f"Expert reference label ({SIDE_LABEL[side]}): **{expert_role}**. Cluster assignment {match} the expert label.")
+        return
+
+    row = match_rows.iloc[0]
+    role = row["role"]
+    team = row.get("team", None)
+    country = row.get("country", None)
+    expert_role = row.get("expert_role", None)
+
+    badge_style = (
+        f"display:inline-block;background:{PAGE};border:1px solid {BORDER};border-radius:6px;"
+        f"padding:2px 8px;margin-right:8px;font-size:0.82rem;color:{INK_SECONDARY};"
+    )
+    badges = ""
+    if isinstance(team, str):
+        badges += f"<span style='{badge_style}'><span style='color:{INK_MUTED};'>Team</span>&nbsp;<b>{team}</b></span>"
+    if isinstance(country, str):
+        badges += f"<span style='{badge_style}'><span style='color:{INK_MUTED};'>Country</span>&nbsp;<b>{country}</b></span>"
+
+    st.markdown(
+        f"""
+        <div class='role-card'>
+            <div style='font-size:0.85rem;color:{INK_MUTED};text-transform:uppercase;letter-spacing:0.04em;'>
+                {SIDE_LABEL[side]} role assignment
+            </div>
+            <div style='font-size:1.6rem;font-weight:700;color:{role_color(role)};'>{role}</div>
+            <div style='color:{INK_PRIMARY};font-size:1rem;font-weight:600;margin:2px 0 8px;'>{player}</div>
+            <div>{badges}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if isinstance(expert_role, str):
+        if expert_role in ("Mixed", "Flex"):
+            st.caption(
+                f"Expert reference label: **{expert_role}**. "
+                "Not scored: the expert label itself is ambiguous."
+            )
         else:
-            st.caption("No expert reference label available for this player (not in the curated annotation set).")
+            match = "matches" if row["role_match"] else "differs from"
+            st.caption(f"Expert reference label: **{expert_role}**. Cluster assignment {match} the expert label.")
+    else:
+        st.caption("No expert reference label available for this player (not in the curated annotation set).")
 
-    st.write("")
-    pc1, pc2 = st.columns([3, 2])
+    avg_label = SIDE_AVG_LABEL[side]
+    st.markdown(f"**Feature profile vs. {avg_label}**")
+    fi = load_feature_importance(side)
+    top_feats = sort_by_category([f for f in fi["feature"].head(10).tolist() if f in df.columns])
+    mu = df[top_feats].mean()
+    sigma = df[top_feats].std().replace(0, np.nan)
+    z = ((row[top_feats].astype(float) - mu) / sigma).fillna(0.0)
+    # Reverse so the first category (Combat, etc.) reads top-to-bottom on a horizontal bar chart.
+    z = z.iloc[::-1]
+    labels = [f"{feature_category(f)} · {f.replace('_', ' ')}" for f in z.index]
 
-    with pc1:
-        avg_label = SIDE_AVG_LABEL[side]
-        st.subheader(f"Feature profile vs. {avg_label}")
-        fi = load_feature_importance(side)
-        top_feats_by_importance = [f for f in fi["feature"].head(10).tolist() if f in df.columns]
-        top_feats = sort_by_category(top_feats_by_importance)
-        mu = df[top_feats].mean()
-        sigma = df[top_feats].std().replace(0, np.nan)
-        z = ((row[top_feats].astype(float) - mu) / sigma).fillna(0.0)
-        # Reverse so the first category (Combat, etc.) reads top-to-bottom on a horizontal bar chart.
-        z = z.iloc[::-1]
-        labels = [f"{feature_category(f)} · {f.replace('_', ' ')}" for f in z.index]
-
-        fig = go.Figure()
-        colors = [role_color(role) if v >= 0 else MUTED_BAR for v in z.values]
-        fig.add_trace(
-            go.Bar(
-                x=z.values,
-                y=labels,
-                orientation="h",
-                marker_color=colors,
-                hovertemplate="%{y}: %{x:.2f} std vs " + avg_label + "<extra></extra>",
-            )
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=z.values,
+            y=labels,
+            orientation="h",
+            marker_color=[role_color(role) if v >= 0 else MUTED_BAR for v in z.values],
+            hovertemplate="%{y}: %{x:.2f} std vs " + avg_label + "<extra></extra>",
         )
-        fig.add_vline(x=0, line_color=INK_MUTED, line_width=1)
-        fig.update_layout(xaxis_title=f"Standard deviations from {avg_label}", yaxis_title=None)
-        st.plotly_chart(styled_fig(fig, height=380), width='stretch', config=PLOTLY_CONFIG)
-        st.caption(f"Top 10 features by model importance for this side's clustering, grouped by stat category. Positive = above the {avg_label}.")
+    )
+    fig.add_vline(x=0, line_color=INK_MUTED, line_width=1)
+    fig.update_layout(xaxis_title=f"Std. devs from {avg_label}", yaxis_title=None)
+    fig.update_yaxes(tickfont=dict(color=INK_MUTED, size=10), automargin=True)
+    st.plotly_chart(styled_fig(fig, height=380), width='stretch', config=PLOTLY_CONFIG, key=f"profile_{side}")
 
-    with pc2:
-        st.subheader("Where they sit on the map")
-        fig2 = go.Figure()
-        for r, sub in df.groupby("role"):
-            is_selected = sub["player_name"] == player
-            fig2.add_trace(
-                go.Scatter(
-                    x=sub.loc[~is_selected, "pc1"],
-                    y=sub.loc[~is_selected, "pc2"],
-                    mode="markers",
-                    name=r,
-                    marker=dict(color=role_color(r), size=7, symbol=role_symbol(r), opacity=0.35, line=dict(width=0)),
-                    text=sub.loc[~is_selected, "player_name"],
-                    hovertemplate="%{text} (" + r + ")<extra></extra>",
-                    showlegend=True,
-                )
-            )
-        sel = df[df["player_name"] == player]
+    st.markdown("**Where they sit**")
+    fig2 = go.Figure()
+    for r, sub in df.groupby("role"):
+        others = sub[sub["player_name"] != player]
         fig2.add_trace(
             go.Scatter(
-                x=sel["pc1"], y=sel["pc2"], mode="markers+text", name=player,
-                marker=dict(color=role_color(role), size=16, symbol=role_symbol(role), line=dict(width=2, color=INK_PRIMARY)),
-                text=[player], textposition="top center", showlegend=False,
-                hovertemplate=f"{player} ({role})<extra></extra>",
+                x=others["pc1"], y=others["pc2"], mode="markers", name=r,
+                marker=dict(color=role_color(r), size=7, symbol=role_symbol(r), opacity=0.35, line=dict(width=0)),
+                text=others["player_name"],
+                hovertemplate="%{text} (" + r + ")<extra></extra>",
             )
         )
-        fig2.update_layout(xaxis_title="PC1", yaxis_title="PC2")
-        st.plotly_chart(styled_fig(fig2, height=380), width='stretch', config=PLOTLY_CONFIG)
-        st.caption("PCA projection of all clustered features. This player is highlighted against their side's full cluster map.")
+    fig2.add_trace(
+        go.Scatter(
+            x=match_rows["pc1"], y=match_rows["pc2"], mode="markers+text", name=player,
+            marker=dict(color=role_color(role), size=16, symbol=role_symbol(role), line=dict(width=2, color=INK_PRIMARY)),
+            text=[player], textposition="top center", showlegend=False,
+            hovertemplate=f"{player} ({role})<extra></extra>",
+        )
+    )
+    fig2.update_layout(xaxis_title="PC1", yaxis_title="PC2")
+    st.plotly_chart(styled_fig(fig2, height=360), width='stretch', config=PLOTLY_CONFIG, key=f"pca_{side}")
+
+
+with tab_player:
+    players = sorted(
+        set(load_player_clusters("ct")["player_name"].dropna())
+        | set(load_player_clusters("t")["player_name"].dropna())
+    )
+
+    if st.session_state.get("player_select") not in players:
+        st.session_state["player_select"] = "device" if "device" in players else players[0]
+
+    def _pick_random_player():
+        st.session_state["player_select"] = random.choice(players)
+
+    sel_col, btn_col, _spacer = st.columns([2, 1, 3])
+    with sel_col:
+        player = st.selectbox("Player", players, key="player_select")
+    with btn_col:
+        st.write("")
+        st.button("Random", on_click=_pick_random_player, width='stretch')
+
+    st.caption("Both sides are shown together: CT on the left, T on the right. Roles come from each side's best KMeans model.")
+    st.write("")
+
+    ct_col, t_col = st.columns(2)
+    with ct_col:
+        render_player_side("ct", player)
+    with t_col:
+        render_player_side("t", player)
+
+    st.caption(
+        "Bars: top 10 features by that side's model importance, grouped by stat category — positive means above "
+        "that side's average. Scatter: PCA projection of all clustered features, with this player highlighted."
+    )
 
 
 with tab_clusters:
-    side = st.radio("Side", ["ct", "t"], format_func=lambda s: SIDE_LABEL[s], horizontal=True, key="cluster_side")
-    df = load_player_clusters(side)
-    model_name, k = BASE_MODEL[side]
+    ctl_side, ctl_method = st.columns([1, 2])
+    with ctl_side:
+        side = st.radio("Side", ["ct", "t"], format_func=lambda s: SIDE_LABEL[s], horizontal=True, key="cluster_side")
+    with ctl_method:
+        method = st.radio(
+            "Model", list(MODELS), format_func=lambda m: METHOD_LABEL[m], horizontal=True, key="cluster_method"
+        )
 
-    st.subheader(f"{SIDE_LABEL[side]}: {k} clusters (KMeans, best model)")
-
-    cols = st.columns(k)
+    model_name = MODELS[method][side]
+    df = load_player_clusters(side, model_name)
     order = df.groupby("role")["role"].count().sort_values(ascending=False).index.tolist()
-    role_gt_side = load_gt_accuracy(side, "side")
+
+    st.subheader(f"{SIDE_LABEL[side]}: {len(order)} clusters ({METHOD_LABEL[method]}, best config)")
+
+    scores = load_model_scores(side)
+    score_row = scores[scores["name"] == model_name]
+    if not score_row.empty:
+        s = score_row.iloc[0]
+        st.caption(
+            f"`{model_name}` · silhouette {s['silhouette']:.3f} · stability {s['stability_mean']:.3f} · "
+            f"composite {s['composite_score']:.3f} · external ARI {s['gt_ari']:.3f}"
+        )
+    if method == "hdbscan":
+        st.caption(
+            "HDBSCAN chooses its own cluster count and leaves low-density players unassigned "
+            "(shown as a noise group). It converges to a broad AWPer / everyone-else split."
+        )
+
+    cols = st.columns(len(order))
+    role_gt_side = load_gt_accuracy(side, "side", model_name)
     for i, r in enumerate(order):
         sub = df[df["role"] == r]
         gt_row = role_gt_side[role_gt_side["role"] == r]
-        acc = f"{gt_row.iloc[0]['accuracy'] * 100:.0f}%" if not gt_row.empty else "n/a"
-        with cols[i % k]:
+        if r == "Noise (unassigned)" or gt_row.empty:
+            acc_line = "not scored"
+        else:
+            acc_line = f"{gt_row.iloc[0]['accuracy'] * 100:.0f}% match vs. expert labels"
+        with cols[i]:
             st.markdown(
                 f"""
                 <div class='role-card'>
                     <div style='font-weight:700;color:{role_color(r)};font-size:1.05rem;'>{r}</div>
                     <div style='color:{INK_SECONDARY};font-size:0.9rem;'>{len(sub)} players</div>
-                    <div style='color:{INK_MUTED};font-size:0.85rem;'>{acc} match vs. expert labels</div>
+                    <div style='color:{INK_MUTED};font-size:0.85rem;'>{acc_line}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -474,11 +520,11 @@ with tab_clusters:
                 )
             )
         fig.update_layout(xaxis_title="PC1", yaxis_title="PC2")
-        st.plotly_chart(styled_fig(fig, height=460), width='stretch', config=PLOTLY_CONFIG)
+        st.plotly_chart(styled_fig(fig, height=460), width='stretch', config=PLOTLY_CONFIG, key="cluster_pca")
 
     with right:
         st.subheader("What drives the split")
-        fi = load_feature_importance(side)
+        fi = load_feature_importance(side, model_name)
         top = fi.head(12).sort_values("importance")
         fig3 = go.Figure(
             go.Bar(
@@ -488,12 +534,12 @@ with tab_clusters:
             )
         )
         fig3.update_layout(xaxis_title="Feature importance", yaxis_title=None)
-        st.plotly_chart(styled_fig(fig3, height=460), width='stretch', config=PLOTLY_CONFIG)
+        st.plotly_chart(styled_fig(fig3, height=460), width='stretch', config=PLOTLY_CONFIG, key="cluster_importance")
 
     st.write("")
     avg_label = SIDE_AVG_LABEL[side]
     st.subheader(f"Cluster feature signature (z-score vs. {avg_label})")
-    fi_full = load_feature_importance(side)
+    fi_full = load_feature_importance(side, model_name)
     heat_feats = fi_full["feature"].head(14).tolist()
     heat_feats = [f for f in heat_feats if f in df.columns]
     mu = df[heat_feats].mean()
@@ -515,16 +561,17 @@ with tab_clusters:
         )
     )
     fig4.update_layout(xaxis_tickangle=-40)
-    st.plotly_chart(styled_fig(fig4, height=340), width='stretch', config=PLOTLY_CONFIG)
+    st.plotly_chart(styled_fig(fig4, height=340), width='stretch', config=PLOTLY_CONFIG, key="cluster_heatmap")
     st.caption(f"Blue = below the {avg_label}, red = above. Built from the same per-player features used for clustering.")
 
 
 with tab_models:
     st.subheader("KMeans vs. Gaussian Mixture vs. HDBSCAN")
     st.caption(
-        "Composite score blends internal cluster quality (silhouette, Davies-Bouldin), "
-        "subsampling stability, and agreement with expert-curated role labels. "
-        "The best-scoring configuration per method is shown for each side."
+        "Composite score blends internal cluster quality (silhouette, Davies-Bouldin) "
+        "and subsampling stability. "
+        "The best-scoring configuration per method is shown for each side — the same configurations "
+        "you can inspect cluster-by-cluster in the Clusters & Roles tab."
     )
 
     rows = []
@@ -550,7 +597,7 @@ with tab_models:
                 )
             )
             fig.update_layout(title=f"{SIDE_LABEL[side]}: composite score by method", xaxis_title="Composite score", yaxis_title=None)
-            st.plotly_chart(styled_fig(fig, height=280), width='stretch', config=PLOTLY_CONFIG)
+            st.plotly_chart(styled_fig(fig, height=280), width='stretch', config=PLOTLY_CONFIG, key=f"models_{side}")
 
     st.write("")
     st.subheader("Full comparison table")
@@ -600,7 +647,7 @@ with tab_ablation:
         )
     )
     fig.update_layout(xaxis_title="Composite score", yaxis_title=None)
-    st.plotly_chart(styled_fig(fig, height=520), width='stretch', config=PLOTLY_CONFIG)
+    st.plotly_chart(styled_fig(fig, height=520), width='stretch', config=PLOTLY_CONFIG, key="ablation_chart")
     st.caption("Dark bar = the full-feature baseline. Bars below it mean that ablation hurt overall cluster quality. Bars above mean it helped.")
 
     st.write("")
