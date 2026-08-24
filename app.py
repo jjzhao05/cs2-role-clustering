@@ -295,7 +295,7 @@ st.write("")
 st.markdown(
     "<div class='finding-line'>"
     "<b>Main finding:</b> AWPers are highly separable on both sides. CT riflers split into a "
-    "meaningful Rotator/Anchor structure driven mainly by positioning. T-side Lurkers separate "
+    "meaningful Rotator / Anchor structure driven mainly by positioning. T-side Lurkers separate "
     "cleanly, while Spacetakers divide into an aggressive group and a utility-heavy, IGL group."
     "</div>",
     unsafe_allow_html=True,
@@ -307,6 +307,28 @@ tab_player, tab_pipeline = st.tabs(["Player Explorer", "Clusters, Models & Ablat
 with tab_pipeline:
     tab_clusters, tab_models, tab_ablation = st.tabs(
         ["Clusters & Roles", "Model Comparison", "Feature Ablations"]
+    )
+
+
+def player_info_html(player: str) -> str:
+    """Player name + team/country badges, shown once above both side panels."""
+    roles = load_roles()
+    row = roles[roles["player_name"].astype(str).str.strip() == player]
+    badge_style = (
+        f"display:inline-block;background:{PAGE};border:1px solid {BORDER};border-radius:6px;"
+        f"padding:2px 8px;margin-right:8px;font-size:0.82rem;color:{INK_SECONDARY};"
+    )
+    badges = ""
+    if not row.empty:
+        for label, value in (("Team", row.iloc[0]["team"]), ("Country", row.iloc[0]["country"])):
+            if isinstance(value, str):
+                badges += (
+                    f"<span style='{badge_style}'><span style='color:{INK_MUTED};'>{label}</span>"
+                    f"&nbsp;<b>{value}</b></span>"
+                )
+    return (
+        f"<div style='color:{INK_PRIMARY};font-size:1.1rem;font-weight:700;margin-bottom:6px;'>{player}</div>"
+        f"<div>{badges}</div>"
     )
 
 
@@ -331,19 +353,7 @@ def render_player_side(side: str, player: str) -> None:
 
     row = match_rows.iloc[0]
     role = row["role"]
-    team = row.get("team", None)
-    country = row.get("country", None)
     expert_role = row.get("expert_role", None)
-
-    badge_style = (
-        f"display:inline-block;background:{PAGE};border:1px solid {BORDER};border-radius:6px;"
-        f"padding:2px 8px;margin-right:8px;font-size:0.82rem;color:{INK_SECONDARY};"
-    )
-    badges = ""
-    if isinstance(team, str):
-        badges += f"<span style='{badge_style}'><span style='color:{INK_MUTED};'>Team</span>&nbsp;<b>{team}</b></span>"
-    if isinstance(country, str):
-        badges += f"<span style='{badge_style}'><span style='color:{INK_MUTED};'>Country</span>&nbsp;<b>{country}</b></span>"
 
     st.markdown(
         f"""
@@ -352,8 +362,6 @@ def render_player_side(side: str, player: str) -> None:
                 {SIDE_LABEL[side]} role assignment
             </div>
             <div style='font-size:1.6rem;font-weight:700;color:{role_color(role)};'>{role}</div>
-            <div style='color:{INK_PRIMARY};font-size:1rem;font-weight:600;margin:2px 0 8px;'>{player}</div>
-            <div>{badges}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -371,7 +379,7 @@ def render_player_side(side: str, player: str) -> None:
         st.caption("No expert reference label available for this player (not in the curated annotation set).")
 
     avg_label = SIDE_AVG_LABEL[side]
-    st.markdown(f"**Feature profile vs. {avg_label}**")
+    st.markdown(f"**Top-10 feature z-scores vs. {avg_label}**")
     fi = load_feature_importance(side)
     top_feats = sort_by_category([f for f in fi["feature"].head(10).tolist() if f in df.columns])
     mu = df[top_feats].mean()
@@ -396,7 +404,7 @@ def render_player_side(side: str, player: str) -> None:
     fig.update_yaxes(tickfont=dict(color=INK_MUTED, size=10), automargin=True)
     st.plotly_chart(styled_fig(fig, height=380), width='stretch', config=PLOTLY_CONFIG, key=f"profile_{side}")
 
-    st.markdown("**Where they sit**")
+    st.markdown("**PCA cluster map with this player highlighted**")
     fig2 = go.Figure()
     for r, sub in df.groupby("role"):
         others = sub[sub["player_name"] != player]
@@ -432,14 +440,17 @@ with tab_player:
     def _pick_random_player():
         st.session_state["player_select"] = random.choice(players)
 
-    sel_col, btn_col, _spacer = st.columns([2, 1, 3])
+    sel_col, btn_col, info_col = st.columns([2, 1, 3])
     with sel_col:
         player = st.selectbox("Player", players, key="player_select")
     with btn_col:
         st.write("")
         st.button("Random", on_click=_pick_random_player, width='stretch')
+    with info_col:
+        st.write("")
+        st.markdown(player_info_html(player), unsafe_allow_html=True)
 
-    st.caption("Roles come from each side's best KMeans model.")
+    st.caption("Both sides are shown together: CT on the left, T on the right. Roles come from each side's best KMeans model.")
     st.write("")
 
     ct_col, t_col = st.columns(2)
@@ -449,8 +460,8 @@ with tab_player:
         render_player_side("t", player)
 
     st.caption(
-        "Bars: top 10 features by that side's model importance, grouped by stat category"
-        "Scatter: PCA projection of all clustered features."
+        "Bars: top 10 features by that side's model importance, grouped by stat category — positive means above "
+        "that side's average. Scatter: PCA projection of all clustered features, with this player highlighted."
     )
 
 
@@ -467,7 +478,7 @@ with tab_clusters:
     df = load_player_clusters(side, model_name)
     order = df.groupby("role")["role"].count().sort_values(ascending=False).index.tolist()
 
-    st.subheader(f"{SIDE_LABEL[side]}: {len(order)} clusters ({METHOD_LABEL[method]}, best config)")
+    st.subheader(f"{SIDE_LABEL[side]}: {len(order)} clusters from the best {METHOD_LABEL[method]} config")
 
     scores = load_model_scores(side)
     score_row = scores[scores["name"] == model_name]
@@ -480,7 +491,7 @@ with tab_clusters:
     if method == "hdbscan":
         st.caption(
             "HDBSCAN chooses its own cluster count and leaves low-density players unassigned "
-            "(shown as a noise group). It converges to a broad AWPer/rifler split."
+            "(shown as a noise group). It converges to a broad AWPer / everyone-else split."
         )
 
     cols = st.columns(len(order))
@@ -523,7 +534,7 @@ with tab_clusters:
         st.plotly_chart(styled_fig(fig, height=460), width='stretch', config=PLOTLY_CONFIG, key="cluster_pca")
 
     with right:
-        st.subheader("What drives the split")
+        st.subheader("Top-12 feature importances")
         fi = load_feature_importance(side, model_name)
         top = fi.head(12).sort_values("importance")
         fig3 = go.Figure(
@@ -538,7 +549,7 @@ with tab_clusters:
 
     st.write("")
     avg_label = SIDE_AVG_LABEL[side]
-    st.subheader(f"Cluster feature signature (z-score vs. {avg_label})")
+    st.subheader(f"Cluster × feature z-score heatmap vs. {avg_label}")
     fi_full = load_feature_importance(side, model_name)
     heat_feats = fi_full["feature"].head(14).tolist()
     heat_feats = [f for f in heat_feats if f in df.columns]
@@ -566,11 +577,11 @@ with tab_clusters:
 
 
 with tab_models:
-    st.subheader("KMeans vs. Gaussian Mixture vs. HDBSCAN")
+    st.subheader("Composite score and accuracy by method")
     st.caption(
-        "Composite score combines internal cluster quality (silhouette, Davies-Bouldin) "
+        "Composite score blends internal cluster quality (silhouette, Davies-Bouldin) "
         "and subsampling stability. "
-        "The best-scoring configuration per method is shown for each side"
+        "The best-scoring configuration per method is shown for each side — the same configurations "
         "you can inspect cluster-by-cluster in the Clusters & Roles tab."
     )
 
@@ -582,25 +593,41 @@ with tab_models:
         rows.append(best_per_method)
     all_best = pd.concat(rows, ignore_index=True)
 
+    def method_bar(sub: pd.DataFrame, column: str, title: str, axis_title: str, x_max: float, key: str) -> None:
+        sub = sub.sort_values(column, ascending=True)
+        fig = go.Figure(
+            go.Bar(
+                x=sub[column], y=sub["method"].str.upper(),
+                orientation="h",
+                marker_color=[METHOD_COLOR.get(m, INK_MUTED) for m in sub["method"]],
+                text=[f"{v:.3f}" for v in sub[column]],
+                textposition="outside",
+                hovertemplate="%{y}: %{x:.3f}<extra></extra>",
+            )
+        )
+        fig.update_layout(title=title, xaxis_title=axis_title, yaxis_title=None, xaxis_range=[0, x_max])
+        st.plotly_chart(styled_fig(fig, height=280), width='stretch', config=PLOTLY_CONFIG, key=key)
+
     col_a, col_b = st.columns(2)
     for col, side in zip((col_a, col_b), ("ct", "t")):
         with col:
-            sub = all_best[all_best["side"] == side].sort_values("composite_score", ascending=True)
-            fig = go.Figure(
-                go.Bar(
-                    x=sub["composite_score"], y=sub["method"].str.upper(),
-                    orientation="h",
-                    marker_color=[METHOD_COLOR.get(m, INK_MUTED) for m in sub["method"]],
-                    text=[f"{v:.3f}" for v in sub["composite_score"]],
-                    textposition="outside",
-                    hovertemplate="%{y}: %{x:.3f}<extra></extra>",
-                )
+            sub = all_best[all_best["side"] == side]
+            method_bar(
+                sub, "composite_score", f"{SIDE_LABEL[side]}: composite score by method",
+                "Composite score", 0.6, f"models_composite_{side}",
             )
-            fig.update_layout(title=f"{SIDE_LABEL[side]}: composite score by method", xaxis_title="Composite score", yaxis_title=None)
-            st.plotly_chart(styled_fig(fig, height=280), width='stretch', config=PLOTLY_CONFIG, key=f"models_{side}")
+            method_bar(
+                sub, "gt_accuracy", f"{SIDE_LABEL[side]}: accuracy vs. expert labels",
+                "External accuracy", 1.0, f"models_accuracy_{side}",
+            )
+
+    st.caption(
+        "Composite score is internal (no labels used). Accuracy is external: the share of expert-labelled "
+        "players falling in a cluster whose dominant role matches their label."
+    )
 
     st.write("")
-    st.subheader("Full comparison table")
+    st.subheader("Model metrics for the best config per method")
     display_cols = [
         "side", "method", "name", "k", "silhouette", "davies_bouldin",
         "stability_mean", "composite_score", "gt_ari", "gt_accuracy",
@@ -622,15 +649,15 @@ with tab_models:
     )
     st.caption(
         "KMeans produced the most interpretable, best-scoring role structures on both sides. "
-        "GMM was less stable across subsampling. HDBSCAN converged to two-cluster solutions "
+        "GMM was less stable across subsamples. HDBSCAN converged to broad two-cluster solutions "
         "that are very stable but too coarse to separate individual roles."
     )
 
 
 with tab_ablation:
-    st.subheader("Which feature groups actually drive the role structure?")
+    st.subheader("Composite score by feature-group ablation")
     st.caption(
-        "Each bar is a full re-clustering with one feature group removed or isolated, "
+        "Each bar is a full re-clustering with one feature group removed (or isolated), "
         "holding k fixed at the side's best value. 'full' is the baseline model using every feature group."
     )
 
@@ -648,10 +675,10 @@ with tab_ablation:
     )
     fig.update_layout(xaxis_title="Composite score", yaxis_title=None)
     st.plotly_chart(styled_fig(fig, height=520), width='stretch', config=PLOTLY_CONFIG, key="ablation_chart")
-    st.caption("Dark bar = the full-feature baseline model. Bars below it mean that ablation hurt overall cluster quality. Bars above mean it helped.")
+    st.caption("Dark bar = the full-feature baseline. Bars below it mean that ablation hurt overall cluster quality. Bars above mean it helped.")
 
     st.write("")
-    st.subheader("Ablation detail")
+    st.subheader("Ablation metrics table")
     show_cols = ["ablation", "n_features", "silhouette", "stability_mean", "gt_ari", "gt_purity", "composite_score"]
     show_cols = [c for c in show_cols if c in sub.columns]
     detail = sub[show_cols].sort_values("composite_score", ascending=False).rename(columns={
@@ -680,7 +707,7 @@ with tab_ablation:
 
 st.divider()
 st.caption(
-    "Data: 463 demos, 214 players. "
+    "Data: 463 parsed professional CS2 demos across four S-tier events, 214 players. "
     "External reference labels from NER0cs's Positions Database (HLTV.org). "
-    "This dashboard reads only precomputed pipeline outputs."
+    "This dashboard reads only precomputed pipeline outputs. No demo parsing or model fitting runs here."
 )
