@@ -1,4 +1,5 @@
 import random
+import re
 from pathlib import Path
 
 import numpy as np
@@ -69,7 +70,7 @@ PLOTLY_CONFIG = {
 MODELS = {
     "kmeans": {"ct": "kmeans_k3", "t": "kmeans_k4"},
     "gmm": {"ct": "gmm_k3", "t": "gmm_k4"},
-    "hdbscan": {"ct": "hdbscan_mcs10_ms1", "t": "hdbscan_mcs6_ms1"},
+    "hdbscan": {"ct": "hdbscan_mcs10_ms2", "t": "hdbscan_mcs10_ms1"},
 }
 METHOD_LABEL = {"kmeans": "KMeans", "gmm": "Gaussian Mixture", "hdbscan": "HDBSCAN"}
 BASE_MODEL = MODELS["kmeans"]  # model used by the Player Explorer
@@ -324,16 +325,19 @@ with tab_pipeline:
 
 def country_flag_html(country: str) -> str:
     """Flag image for a country. Windows browsers do not draw flag emoji, so this
-    uses flagcdn.com and falls back to the country code if the image cannot load."""
+    uses flagcdn.com and falls back to an empty box if the image cannot load."""
     code = COUNTRY_CODE.get(country)
     if not code:
         return ""
-    # Drawn as a background image so an offline run shows an empty box rather than
-    # a broken-image icon.
+    # Rendered as an <img> with object-fit so flags whose native aspect ratio
+    # doesn't match the 24x18 badge box (e.g. Russia/Ukraine at 3:2) are cropped
+    # symmetrically instead of being squashed/tiled the way a CSS background-image
+    # with background-size:cover was (bottom stripe bleeding into the top).
     return (
-        f"<span style=\"display:inline-block;width:24px;height:18px;border-radius:2px;"
-        f"border:1px solid {BORDER};background-size:cover;background-position:center;"
-        f"background-image:url('https://flagcdn.com/h24/{code.lower()}.png');\"></span>"
+        f'<img src="https://flagcdn.com/h24/{code.lower()}.png" alt="{country}" '
+        f'style="display:inline-block;width:24px;height:18px;object-fit:cover;'
+        f'object-position:center;border-radius:2px;border:1px solid {BORDER};'
+        f'vertical-align:middle;" onerror="this.style.visibility=\'hidden\'" />'
     )
 
 
@@ -363,7 +367,7 @@ def player_info_html(player: str) -> str:
     )
 
 
-def render_player_side(side: str, player: str) -> None:
+def render_player_side(side: str, player: str, show_no_label_caption: bool = True) -> None:
     """One side's panel for the selected player: role card, feature profile, PCA map."""
     df = load_player_clusters(side)
     match_rows = df[df["player_name"] == player]
@@ -406,7 +410,7 @@ def render_player_side(side: str, player: str) -> None:
         else:
             match = "matches" if row["role_match"] else "differs from"
             st.caption(f"Expert reference label: **{expert_role}**. Cluster assignment {match} the expert label.")
-    else:
+    elif show_no_label_caption:
         st.caption("No expert reference label available for this player (not in the curated annotation set).")
 
     avg_label = SIDE_AVG_LABEL[side]
@@ -481,11 +485,22 @@ with tab_player:
 
     st.write("")
 
+    def _expert_role(side: str):
+        df = load_player_clusters(side)
+        match = df[df["player_name"] == player]
+        if match.empty:
+            return None
+        return match.iloc[0].get("expert_role", None)
+
+    both_unlabeled = not isinstance(_expert_role("ct"), str) and not isinstance(_expert_role("t"), str)
+    if both_unlabeled:
+        st.caption("No expert reference label available for this player (not in the curated annotation set).")
+
     ct_col, t_col = st.columns(2)
     with ct_col:
-        render_player_side("ct", player)
+        render_player_side("ct", player, show_no_label_caption=not both_unlabeled)
     with t_col:
-        render_player_side("t", player)
+        render_player_side("t", player, show_no_label_caption=not both_unlabeled)
 
     st.caption(
         "Bars: top 10 features by that side's model importance, grouped by stat category. Positive means above "
@@ -506,7 +521,11 @@ with tab_clusters:
     df = load_player_clusters(side, model_name)
     order = df.groupby("role")["role"].count().sort_values(ascending=False).index.tolist()
 
-    st.subheader(f"{SIDE_LABEL[side]}: {len(order)} clusters from the best {METHOD_LABEL[method]} config")
+    if method == "hdbscan":
+        _mcs, _ms = re.match(r"hdbscan_mcs(\d+)_ms(\d+)", model_name).groups()
+        st.subheader(f"{method} min cluster size {_mcs}, min samples {_ms}")
+    else:
+        st.subheader(f"{method} k = {len(order)}")
 
     scores = load_model_scores(side)
     score_row = scores[scores["name"] == model_name]
