@@ -30,6 +30,7 @@ ROLE_COLOR = {
     "Rotator": "#eb6834",
     "Anchor": "#1baf7a",
     "Lurker": "#4a3aa7",
+    "Spacetaker": "#eda100",
     "Spacetaker (Aggressive)": "#eda100",
     "Spacetaker (IGL)": "#e87ba4",
     "Noise (unassigned)": "#a9a79d",
@@ -39,6 +40,7 @@ ROLE_SYMBOL = {
     "Rotator": "circle",
     "Anchor": "circle",
     "Lurker": "circle",
+    "Spacetaker": "circle",
     "Spacetaker (Aggressive)": "circle",
     "Spacetaker (IGL)": "circle",
 }
@@ -526,7 +528,6 @@ with tab_clusters:
         config_label = f"{method} min cluster size {_mcs}, min samples {_ms}"
     else:
         config_label = f"{method} k = {len(order)}"
-    st.subheader(config_label)
 
     scores = load_model_scores(side)
     score_row = scores[scores["name"] == model_name]
