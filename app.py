@@ -369,11 +369,25 @@ def player_info_html(player: str) -> str:
     )
 
 
-def render_player_side(side: str, player: str, show_no_label_caption: bool = True, show_chart_captions: bool = True) -> None:
-    """One side's panel for the selected player: role card, feature profile, PCA map."""
+def _load_player_side_data(side: str, player: str):
+    """Return the per-side row data for a player, or None if they weren't clustered on that side."""
     df = load_player_clusters(side)
     match_rows = df[df["player_name"] == player]
     if match_rows.empty:
+        return None
+    row = match_rows.iloc[0]
+    return {
+        "df": df,
+        "match_rows": match_rows,
+        "row": row,
+        "role": row["role"],
+        "expert_role": row.get("expert_role", None),
+    }
+
+
+def render_role_card(side: str, player: str, data, show_no_label_caption: bool = True) -> None:
+    """Role-assignment card + expert-label caption for one side."""
+    if data is None:
         st.markdown(
             f"""
             <div class='role-card'>
@@ -388,9 +402,9 @@ def render_player_side(side: str, player: str, show_no_label_caption: bool = Tru
         )
         return
 
-    row = match_rows.iloc[0]
-    role = row["role"]
-    expert_role = row.get("expert_role", None)
+    role = data["role"]
+    expert_role = data["expert_role"]
+    row = data["row"]
 
     st.markdown(
         f"""
@@ -414,6 +428,15 @@ def render_player_side(side: str, player: str, show_no_label_caption: bool = Tru
             st.caption(f"Expert reference label: **{expert_role}**. Cluster assignment {match} the expert label.")
     elif show_no_label_caption:
         st.caption("No expert reference label available for this player (not in the curated annotation set).")
+
+
+def render_feature_bars(side: str, player: str, data) -> None:
+    """Top-10 feature z-score bar chart for one side."""
+    if data is None:
+        return
+    df = data["df"]
+    row = data["row"]
+    role = data["role"]
 
     avg_label = SIDE_AVG_LABEL[side]
     st.markdown(f"**Top-10 feature z-scores vs. {avg_label}**")
@@ -440,11 +463,15 @@ def render_player_side(side: str, player: str, show_no_label_caption: bool = Tru
     fig.update_layout(xaxis_title=f"Std. devs from {avg_label}", yaxis_title=None)
     fig.update_yaxes(tickfont=dict(color=INK_MUTED, size=10), automargin=True)
     st.plotly_chart(styled_fig(fig, height=380), width='stretch', config=PLOTLY_CONFIG, key=f"profile_{side}")
-    if show_chart_captions:
-        st.caption(
-            "Top 10 features by that side's model importance, grouped by stat category. "
-            "Positive means above that side's average."
-        )
+
+
+def render_pca_map(side: str, player: str, data) -> None:
+    """PCA cluster scatter for one side, with this player highlighted."""
+    if data is None:
+        return
+    df = data["df"]
+    match_rows = data["match_rows"]
+    role = data["role"]
 
     st.markdown("**PCA cluster map with this player highlighted**")
     fig2 = go.Figure()
@@ -468,8 +495,6 @@ def render_player_side(side: str, player: str, show_no_label_caption: bool = Tru
     )
     fig2.update_layout(xaxis_title="PC1", yaxis_title="PC2")
     st.plotly_chart(styled_fig(fig2, height=360), width='stretch', config=PLOTLY_CONFIG, key=f"pca_{side}")
-    if show_chart_captions:
-        st.caption("PCA projection of all clustered features, with this player highlighted.")
 
 
 with tab_player:
@@ -494,22 +519,40 @@ with tab_player:
 
     st.write("")
 
-    def _expert_role(side: str):
-        df = load_player_clusters(side)
-        match = df[df["player_name"] == player]
-        if match.empty:
-            return None
-        return match.iloc[0].get("expert_role", None)
+    ct_data = _load_player_side_data("ct", player)
+    t_data = _load_player_side_data("t", player)
 
-    both_unlabeled = not isinstance(_expert_role("ct"), str) and not isinstance(_expert_role("t"), str)
+    def _expert_role(data):
+        return data["expert_role"] if data is not None else None
+
+    both_unlabeled = not isinstance(_expert_role(ct_data), str) and not isinstance(_expert_role(t_data), str)
     if both_unlabeled:
         st.caption("No expert reference label available for this player (not in the curated annotation set).")
 
     ct_col, t_col = st.columns(2)
     with ct_col:
-        render_player_side("ct", player, show_no_label_caption=not both_unlabeled)
+        render_role_card("ct", player, ct_data, show_no_label_caption=not both_unlabeled)
     with t_col:
-        render_player_side("t", player, show_no_label_caption=not both_unlabeled, show_chart_captions=False)
+        render_role_card("t", player, t_data, show_no_label_caption=not both_unlabeled)
+
+    ct_col, t_col = st.columns(2)
+    with ct_col:
+        render_feature_bars("ct", player, ct_data)
+    with t_col:
+        render_feature_bars("t", player, t_data)
+    if ct_data is not None or t_data is not None:
+        st.caption(
+            "Top 10 features by that side's model importance, grouped by stat category. "
+            "Positive means above that side's average."
+        )
+
+    ct_col, t_col = st.columns(2)
+    with ct_col:
+        render_pca_map("ct", player, ct_data)
+    with t_col:
+        render_pca_map("t", player, t_data)
+    if ct_data is not None or t_data is not None:
+        st.caption("PCA projection of all clustered features, with this player highlighted.")
 
 
 with tab_clusters:
