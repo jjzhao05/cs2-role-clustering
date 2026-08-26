@@ -598,7 +598,7 @@ with tab_clusters:
 
     st.write("")
     avg_label = SIDE_AVG_LABEL[side]
-    st.subheader(f"Cluster × feature z-score heatmap vs. {avg_label}")
+    st.subheader(f"Feature z-score heatmap vs. {avg_label}")
     fi_full = load_feature_importance(side, model_name)
     heat_feats = fi_full["feature"].head(14).tolist()
     heat_feats = [f for f in heat_feats if f in df.columns]
@@ -617,6 +617,9 @@ with tab_clusters:
             colorscale=[[0, "#0d366b"], [0.5, SURFACE], [1, "#e34948"]],
             zmid=0,
             colorbar=dict(title="z-score"),
+            text=zmean.round(2).values,
+            texttemplate="%{text:.2f}",
+            textfont=dict(size=11, color=INK_PRIMARY),
             hovertemplate="%{y}/%{x}: %{z:.2f}<extra></extra>",
         )
     )
