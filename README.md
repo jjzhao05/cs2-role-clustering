@@ -5,7 +5,7 @@ This project builds an end-to-end unsupervised learning pipeline to discover pro
 
 The project compares KMeans, Gaussian Mixture Models, and HDBSCAN using internal clustering metrics, subsampling stability analysis, expert-curated role annotations, feature-profile analysis, and feature ablations. The main finding is that AWPers are highly separable across both CT and T side, while rifler and IGL-related roles are more overlapping and context-dependent.
 
-The full report can be read [here](report.pdf)
+The full report can be read [here](Report.pdf)
 
 Explore the results interactively in the live [Streamlit dashboard](https://cs2-role-clustering-3qq6f6jdtot762u6jjn979.streamlit.app/).
 
