@@ -523,16 +523,17 @@ with tab_clusters:
 
     if method == "hdbscan":
         _mcs, _ms = re.match(r"hdbscan_mcs(\d+)_ms(\d+)", model_name).groups()
-        st.subheader(f"{method} min cluster size {_mcs}, min samples {_ms}")
+        config_label = f"{method} min cluster size {_mcs}, min samples {_ms}"
     else:
-        st.subheader(f"{method} k = {len(order)}")
+        config_label = f"{method} k = {len(order)}"
+    st.subheader(config_label)
 
     scores = load_model_scores(side)
     score_row = scores[scores["name"] == model_name]
     if not score_row.empty:
         s = score_row.iloc[0]
         st.caption(
-            f"`{model_name}` · silhouette {s['silhouette']:.3f} · stability {s['stability_mean']:.3f} · "
+            f"{config_label} · silhouette {s['silhouette']:.3f} · stability {s['stability_mean']:.3f} · "
             f"composite {s['composite_score']:.3f} · external ARI {s['gt_ari']:.3f}"
         )
     if method == "hdbscan":
