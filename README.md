@@ -95,13 +95,13 @@ On the CT side, removing trading or utility features has little effect on extern
 <table>
   <tr>
     <td width="50%">
-      <a href="plots/ablations/ct/ct_composite_score_bar.png">
-        <img src="plots/ablations/ct/ct_composite_score_bar.png" alt="CT-side ablation composite scores">
+      <a href="plots/ct/composite_scores.png">
+        <img src="plots/ct/composite_scores.png" alt="CT-side ablation composite scores">
       </a>
     </td>
     <td width="50%">
-      <a href="plots/ablations/t/t_composite_score_bar.png">
-        <img src="plots/ablations/t/t_composite_score_bar.png" alt="T-side ablation composite scores">
+      <a href="plots/t/composite_scores.png">
+        <img src="plots/t/composite_scores.png" alt="T-side ablation composite scores">
       </a>
     </td>
   </tr>
