@@ -369,7 +369,7 @@ def player_info_html(player: str) -> str:
     )
 
 
-def render_player_side(side: str, player: str, show_no_label_caption: bool = True) -> None:
+def render_player_side(side: str, player: str, show_no_label_caption: bool = True, show_chart_captions: bool = True) -> None:
     """One side's panel for the selected player: role card, feature profile, PCA map."""
     df = load_player_clusters(side)
     match_rows = df[df["player_name"] == player]
@@ -440,10 +440,11 @@ def render_player_side(side: str, player: str, show_no_label_caption: bool = Tru
     fig.update_layout(xaxis_title=f"Std. devs from {avg_label}", yaxis_title=None)
     fig.update_yaxes(tickfont=dict(color=INK_MUTED, size=10), automargin=True)
     st.plotly_chart(styled_fig(fig, height=380), width='stretch', config=PLOTLY_CONFIG, key=f"profile_{side}")
-    st.caption(
-        "Top 10 features by that side's model importance, grouped by stat category. "
-        "Positive means above that side's average."
-    )
+    if show_chart_captions:
+        st.caption(
+            "Top 10 features by that side's model importance, grouped by stat category. "
+            "Positive means above that side's average."
+        )
 
     st.markdown("**PCA cluster map with this player highlighted**")
     fig2 = go.Figure()
@@ -467,7 +468,8 @@ def render_player_side(side: str, player: str, show_no_label_caption: bool = Tru
     )
     fig2.update_layout(xaxis_title="PC1", yaxis_title="PC2")
     st.plotly_chart(styled_fig(fig2, height=360), width='stretch', config=PLOTLY_CONFIG, key=f"pca_{side}")
-    st.caption("PCA projection of all clustered features, with this player highlighted.")
+    if show_chart_captions:
+        st.caption("PCA projection of all clustered features, with this player highlighted.")
 
 
 with tab_player:
@@ -507,7 +509,7 @@ with tab_player:
     with ct_col:
         render_player_side("ct", player, show_no_label_caption=not both_unlabeled)
     with t_col:
-        render_player_side("t", player, show_no_label_caption=not both_unlabeled)
+        render_player_side("t", player, show_no_label_caption=not both_unlabeled, show_chart_captions=False)
 
 
 with tab_clusters:
