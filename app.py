@@ -340,7 +340,9 @@ def country_flag_html(country: str) -> str:
 def player_info_html(player: str) -> str:
     """Player name + team/country badges, shown once above both side panels."""
     roles = load_roles()
-    row = roles[roles["player_name"].astype(str).str.strip() == player]
+    # Demo-derived names are lowercased, expert names are not (ZywOo vs zywoo),
+    # so match on the same case-folded key used for the cluster/roles merge.
+    row = roles[roles["_merge_key"] == str(player).strip().lower()]
     badge_style = (
         f"display:inline-flex;align-items:center;gap:8px;background:{PAGE};"
         f"border:1px solid {BORDER};border-radius:8px;padding:5px 12px;"

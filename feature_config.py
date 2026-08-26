@@ -3,7 +3,7 @@ from collections.abc import Iterable
 import pandas as pd
 
 
-MIN_ROUNDS_PLAYED = 100
+MIN_ROUNDS_PLAYED = 50
 CLUSTER_RANDOM_STATE = 101705
 ABLATION_K = {"ct": 3, "t": 4}
 

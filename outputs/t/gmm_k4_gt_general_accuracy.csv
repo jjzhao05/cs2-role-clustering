@@ -1,5 +1,5 @@
 cluster,dominant_role,n_players,n_match,accuracy
-0,Opener,47,26,0.5532
-1,IGL,21,17,0.8095
-2,AWPer,25,24,0.96
-3,Linchpin,30,14,0.4667
+0,Linchpin,33,15,0.4545
+1,AWPer,25,24,0.96
+2,Opener,47,27,0.5745
+3,IGL,23,17,0.7391

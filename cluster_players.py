@@ -1,5 +1,4 @@
 from pathlib import Path
-import shutil
 import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
@@ -66,7 +65,6 @@ def clean_generated_outputs(side_dir: Path) -> None:
     for pattern in patterns:
         for path in side_dir.glob(pattern):
             path.unlink()
-    shutil.rmtree(side_dir / "surrogate_labels", ignore_errors=True)
 
 
 def fit_labels(X, method, k=None, mcs=None, ms=None, random_state=RANDOM_STATE):
@@ -155,7 +153,7 @@ def score_candidate(X, side, method, name, labels, k=None, mcs=None, ms=None):
     noise_pct = (~mask).mean()
 
     if method == "hdbscan" and noise_pct > HDBSCAN_MAX_NOISE_FRACTION:
-        print(f"  [skip] {name} — {noise_pct:.0%} noise exceeds {HDBSCAN_MAX_NOISE_FRACTION:.0%} cap")
+        print(f"  [skip] {name}: {noise_pct:.0%} noise exceeds {HDBSCAN_MAX_NOISE_FRACTION:.0%} cap")
         return None
     if mask.sum() < 2 or len(set(labels[mask])) < 2:
         return None

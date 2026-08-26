@@ -1,3 +1,4 @@
+from functools import lru_cache
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -5,17 +6,15 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
+from matplotlib.transforms import Bbox
 from scipy.spatial import ConvexHull
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
     adjusted_rand_score,
     balanced_accuracy_score,
-    classification_report,
     f1_score,
 )
-from sklearn.model_selection import RepeatedStratifiedKFold
 from sklearn.preprocessing import LabelEncoder
-from xgboost import XGBClassifier
 
 from feature_config import select_model_features
 
@@ -28,10 +27,23 @@ GROUND_TRUTH_CANDIDATES = [
     Path("roles.csv"),
 ]
 
-RANDOM_STATE = 69420
-XGB_RANDOM_STATE = 42
-SURROGATE_CV_SPLITS = 5
-SURROGATE_CV_REPEATS = 5
+PLAYER_PROFILE_CANDIDATES = [
+    Path("output.csv"),
+]
+
+# Naming every point makes the PCA plots unreadable, so only this many players
+# are annotated, picked once and shared by both sides. Players are taken from
+# each cluster of the reference models in turn so that every cluster on both
+# plots carries at least LABEL_MIN_PER_CLUSTER names, and LABEL_INCLUDE /
+# LABEL_EXCLUDE are manual overrides applied on top. All names are lowercase.
+LABELED_PLAYER_COUNT = 30
+LABEL_MIN_PER_CLUSTER = 3
+LABEL_FONT_SIZE = 14
+LABEL_REFERENCE_MODELS = {"ct": "kmeans_k3", "t": "kmeans_k4"}
+LABEL_INCLUDE = ("karrigan",)
+LABEL_EXCLUDE = ("twistzz",)
+
+RANDOM_STATE = 101705
 
                                                                          
 def _clean_text(value) -> str:
@@ -136,6 +148,237 @@ def load_ground_truth() -> pd.DataFrame | None:
     print(f"[info] no Roles.csv found. Searched: {searched}")
     print("[info] skipping GT comparison")
     return None
+
+
+@lru_cache(maxsize=1)
+def labeled_player_keys() -> frozenset:
+    """Name keys of the players annotated on the PCA plots.
+
+    Prominence is taken from the expert file's big-event rating, averaged over
+    the two sides, and restricted to players who appear on both the CT and T
+    side of the dataset. The set is computed once and reused by both sides, so
+    the CT and T plots annotate the same players. Returns an empty set when the
+    inputs are missing, which leaves every point labeled as before.
+    """
+    profile_path = next(
+        (
+            base / candidate
+            for base in (Path.cwd(), Path(__file__).resolve().parent)
+            for candidate in PLAYER_PROFILE_CANDIDATES
+            if (base / candidate).is_file()
+        ),
+        None,
+    )
+    gt_path = next((path for path in _candidate_paths() if path.exists()), None)
+    if profile_path is None or gt_path is None:
+        return frozenset()
+
+    profiles = pd.read_csv(profile_path)
+    if not {"player_name", "side"}.issubset(profiles.columns):
+        return frozenset()
+    sides_per_player = profiles.assign(_key=profiles["player_name"].map(_name_key)).groupby("_key")["side"].nunique()
+    on_both_sides = set(sides_per_player[sides_per_player >= 2].index)
+    if not on_both_sides:
+        return frozenset()
+
+    raw = _read_csv_flexible(gt_path)
+    if "Name" not in raw.columns:
+        return frozenset()
+    for pair in (
+        ("CT BigEventsCS2 Rating", "T BigEventsCS2 Rating"),
+        ("CT Last12 Rating", "T Last12 Rating"),
+    ):
+        if all(column in raw.columns for column in pair):
+            rating = raw[list(pair)].apply(pd.to_numeric, errors="coerce").mean(axis=1)
+            break
+    else:
+        return frozenset()
+
+    ranked = pd.DataFrame({"_key": raw["Name"].map(_name_key), "rating": rating})
+    ranked = ranked[ranked["_key"].isin(on_both_sides)].dropna(subset=["rating"])
+    ranked = ranked.sort_values("rating", ascending=False).drop_duplicates("_key")
+    rating_by_key = dict(zip(ranked["_key"], ranked["rating"]))
+
+    cells = _label_reference_cells(rating_by_key)
+    if not cells:
+        by_rating = list(ranked["_key"])
+    else:
+        by_rating = _round_robin_by_cell(cells, LABELED_PLAYER_COUNT)
+
+    picked = [key for key in by_rating[:LABELED_PLAYER_COUNT] if key not in LABEL_EXCLUDE]
+    for key in LABEL_INCLUDE:
+        if key in rating_by_key and key not in picked:
+            picked.append(key)
+    picked = picked[:LABELED_PLAYER_COUNT]
+    picked = _enforce_min_per_cell(picked, cells, rating_by_key)
+    return frozenset(picked)
+
+
+def _label_offsets() -> tuple:
+    """Candidate label positions, in points, ordered from nearest ring outward."""
+    offsets = [(9, 9), (9, -11), (-9, 9), (-9, -11)]
+    for radius in (26, 44, 64, 88, 116, 148, 185, 230, 280, 330):
+        for dx, dy in (
+            (1, 0), (-1, 0), (0, 1), (0, -1),
+            (0.72, 0.72), (0.72, -0.72), (-0.72, 0.72), (-0.72, -0.72),
+            (0.94, 0.34), (0.94, -0.34), (-0.94, 0.34), (-0.94, -0.34),
+            (0.34, 0.94), (0.34, -0.94), (-0.34, 0.94), (-0.34, -0.94),
+        ):
+            offsets.append((round(dx * radius), round(dy * radius)))
+    return tuple(offsets)
+
+
+_LABEL_OFFSETS = _label_offsets()
+_MARKER_PAD = 6.0
+
+
+def _box_overlap_area(first: Bbox, second: Bbox) -> float:
+    width = min(first.x1, second.x1) - max(first.x0, second.x0)
+    height = min(first.y1, second.y1) - max(first.y0, second.y0)
+    return width * height if width > 0 and height > 0 else 0.0
+
+
+def _annotate_without_overlap(fig, ax, labels, points=None, fontsize: float = LABEL_FONT_SIZE) -> None:
+    """Draw player names so they cover neither each other nor the markers.
+
+    Every candidate offset is scored on how much it would overlap the markers
+    and the names already placed, how far outside the axes it would fall, and
+    how far it sits from its own point. Covering an unrelated marker is
+    penalized far more than covering another label, since a name sitting on
+    top of the wrong dot is actively misleading rather than just crowded. The
+    first candidate that collides with nothing wins outright; otherwise the
+    least-bad one is used, so a crowded region degrades gracefully instead of
+    stacking names on one spot. Every name gets a white halo so it stays
+    legible over the coloured cluster hulls and over any marker it partially
+    covers, and every name gets a thin arrow back to its own point so which
+    marker it names is never ambiguous.
+    """
+    if not labels:
+        return
+
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+
+    occupied = []
+    if points is not None and len(points):
+        for px, py in ax.transData.transform(points):
+            occupied.append(Bbox.from_extents(
+                px - _MARKER_PAD, py - _MARKER_PAD, px + _MARKER_PAD, py + _MARKER_PAD,
+            ))
+
+    axes_box = ax.get_window_extent(renderer=renderer)
+
+    def _make(text: str, x: float, y: float, dx: float, dy: float):
+        return ax.annotate(
+            text, (x, y),
+            xytext=(dx, dy), textcoords="offset points",
+            fontsize=fontsize, zorder=7,
+            ha="left" if dx > 0 else ("right" if dx < 0 else "center"),
+            va="bottom" if dy > 0 else ("top" if dy < 0 else "center"),
+            bbox=dict(
+                boxstyle="round,pad=0.18",
+                facecolor="white", edgecolor="none", alpha=0.78,
+            ),
+            arrowprops=dict(
+                arrowstyle="->", linewidth=0.9, color="0.3",
+                shrinkA=0, shrinkB=_MARKER_PAD,
+                mutation_scale=10,
+            ),
+        )
+
+    placed = []
+    for text, x, y in sorted(labels, key=lambda item: (-item[2], item[1])):
+        best_offset = None
+        best_score = None
+        for dx, dy in _LABEL_OFFSETS:
+            artist = _make(text, x, y, dx, dy)
+            box = artist.get_window_extent(renderer=renderer).expanded(1.05, 1.3)
+            artist.remove()
+
+            collision = sum(_box_overlap_area(box, other) for other in occupied) * 4.0
+            collision += sum(_box_overlap_area(box, other) for other in placed) * 4.5
+            outside = (
+                max(0.0, axes_box.x0 - box.x0) + max(0.0, box.x1 - axes_box.x1)
+                + max(0.0, axes_box.y0 - box.y0) + max(0.0, box.y1 - axes_box.y1)
+            )
+            score = collision + outside * 60.0 + (abs(dx) + abs(dy)) * 1.4
+            if best_score is None or score < best_score:
+                best_offset, best_score = (dx, dy), score
+            if collision == 0.0 and outside == 0.0:
+                break
+
+        artist = _make(text, x, y, *best_offset)
+        placed.append(artist.get_window_extent(renderer=renderer).expanded(1.05, 1.3))
+
+
+def _label_reference_cells(rating_by_key: dict) -> dict:
+    """Rated players grouped by (side, cluster) of the reference model, best first."""
+    cells: dict = {}
+    for side, model in LABEL_REFERENCE_MODELS.items():
+        path = OUTPUT_DIR / side / f"{model}_player_clusters.csv"
+        if not path.is_file():
+            return {}
+        clusters = pd.read_csv(path)
+        if not {"player_name", "cluster"}.issubset(clusters.columns):
+            return {}
+        clusters["_key"] = clusters["player_name"].map(_name_key)
+        for cluster_id, group in clusters[clusters["cluster"] != -1].groupby("cluster"):
+            members = [key for key in group["_key"] if key in rating_by_key]
+            cells[(side, int(cluster_id))] = sorted(members, key=lambda k: -rating_by_key[k])
+    return cells
+
+
+def _round_robin_by_cell(cells: dict, limit: int) -> list:
+    """Take the best remaining player from each cluster in turn, both sides at once."""
+    remaining = {cell: list(members) for cell, members in cells.items()}
+    picked: list = []
+    while len(picked) < limit:
+        progressed = False
+        for cell in sorted(remaining):
+            while remaining[cell]:
+                key = remaining[cell].pop(0)
+                if key in picked:
+                    continue
+                picked.append(key)
+                progressed = True
+                break
+            if len(picked) >= limit:
+                break
+        if not progressed:
+            break
+    return picked
+
+
+def _enforce_min_per_cell(picked: list, cells: dict, rating_by_key: dict) -> list:
+    """Top up any cluster below the floor, trading against the most crowded one."""
+    if not cells:
+        return picked
+    picked = list(picked)
+
+    def counts() -> dict:
+        return {cell: sum(1 for key in picked if key in set(members)) for cell, members in cells.items()}
+
+    for cell, members in sorted(cells.items()):
+        while counts()[cell] < min(LABEL_MIN_PER_CLUSTER, len(members)):
+            addition = next((key for key in members if key not in picked), None)
+            if addition is None:
+                break
+            current = counts()
+            crowded = max(current, key=lambda c: (current[c], c))
+            droppable = [
+                key for key in picked
+                if key not in LABEL_INCLUDE
+                and key in set(cells[crowded])
+                and all(
+                    current[other] - 1 >= min(LABEL_MIN_PER_CLUSTER, len(cells[other]))
+                    for other in cells
+                    if key in set(cells[other])
+                )
+            ]
+            if droppable:
+                picked.remove(min(droppable, key=lambda k: rating_by_key.get(k, 0.0)))
+            picked.append(addition)
+    return picked
 
 
 def match_ground_truth(players_df: pd.DataFrame, gt: pd.DataFrame, side: str, mode: str = "side") -> pd.DataFrame:
@@ -501,7 +744,7 @@ def plot_composite_scores(results_df: pd.DataFrame, side: str) -> None:
     ax.invert_yaxis()                            
 
     ax.set_xlabel("Composite Score")
-    ax.set_title(f"Composite Score — {side.upper()}")
+    ax.set_title(f"Composite Score: {side.upper()}")
 
     x_max = scored["composite_score"].max()
     ax.set_xlim(0, max(0.1, x_max * 1.1))
@@ -554,154 +797,6 @@ def _print_stability_tiers(results_df: pd.DataFrame) -> None:
             f"std={row['stability_std']:.3f}  [{tier(row['stability_mean'])}]"
         )
                                                                 
-
-def plot_xgb_classification_report(
-    df: pd.DataFrame,
-    labels: np.ndarray,
-    name: str,
-    side: str,
-) -> None:
-
-    try:
-        X = select_model_features(df)
-    except ValueError:
-        return
-
-    valid = labels != -1
-    X_valid = X.values[valid]
-    y_valid = labels[valid]
-
-    if len(set(y_valid)) < 2 or len(y_valid) < 10:
-        return
-
-    encoder = LabelEncoder()
-    y_enc = encoder.fit_transform(y_valid)
-
-    class_counts = np.bincount(y_enc)
-    n_splits = min(SURROGATE_CV_SPLITS, int(class_counts.min()))
-    if n_splits < 2:
-        return
-
-    cv = RepeatedStratifiedKFold(
-        n_splits=n_splits,
-        n_repeats=SURROGATE_CV_REPEATS,
-        random_state=XGB_RANDOM_STATE,
-    )
-    votes = np.zeros((len(y_enc), len(encoder.classes_)), dtype=np.int64)
-    for fold, (train_idx, test_idx) in enumerate(cv.split(X_valid, y_enc)):
-        model = XGBClassifier(
-            n_estimators=300,
-            max_depth=3,
-            learning_rate=0.05,
-            subsample=0.9,
-            colsample_bytree=0.9,
-            objective="multi:softprob",
-            eval_metric="mlogloss",
-            random_state=XGB_RANDOM_STATE + fold,
-            verbosity=0,
-        )
-        model.fit(X_valid[train_idx], y_enc[train_idx])
-        fold_preds = model.predict(X_valid[test_idx]).astype(int)
-        votes[test_idx, fold_preds] += 1
-
-    preds = votes.argmax(axis=1)
-    y_test = y_enc
-
-    cluster_ids = encoder.classes_
-    target_names = [f"Cluster {c}" for c in cluster_ids]
-
-    report = classification_report(
-        y_test,
-        preds,
-        target_names=target_names,
-        output_dict=True,
-        zero_division=0,
-    )
-
-    rows = []
-    for label in target_names:
-        r = report[label]
-        rows.append({
-            "Cluster": label,
-            "Precision": f"{r['precision']:.2f}",
-            "Recall": f"{r['recall']:.2f}",
-            "F1-Score": f"{r['f1-score']:.2f}",
-            "Support": int(r["support"]),
-        })
-
-    for summary_key, display_label in [
-        ("accuracy", "Accuracy"),
-        ("macro avg", "Macro Avg"),
-        ("weighted avg", "Weighted Avg"),
-    ]:
-        if summary_key == "accuracy":
-            rows.append({
-                "Cluster": display_label,
-                "Precision": "",
-                "Recall": "",
-                "F1-Score": f"{report['accuracy']:.2f}",
-                "Support": int(sum(report[t]["support"] for t in target_names)),
-            })
-        else:
-            r = report[summary_key]
-            rows.append({
-                "Cluster": display_label,
-                "Precision": f"{r['precision']:.2f}",
-                "Recall": f"{r['recall']:.2f}",
-                "F1-Score": f"{r['f1-score']:.2f}",
-                "Support": int(r["support"]),
-            })
-
-    table_df = pd.DataFrame(rows)
-    col_labels = list(table_df.columns)
-    cell_text = table_df.values.tolist()
-
-    n_rows = len(table_df)
-    fig_h = max(3.0, 0.45 * n_rows + 1.8)
-    fig, ax = plt.subplots(figsize=(9, fig_h))
-    ax.axis("off")
-
-    row_colors = []
-    divider_idx = len(target_names)
-    for i in range(n_rows):
-        if i >= divider_idx:
-            row_colors.append(["#dce8f5"] * len(col_labels))
-        elif i % 2 == 0:
-            row_colors.append(["#f7f7f7"] * len(col_labels))
-        else:
-            row_colors.append(["#ffffff"] * len(col_labels))
-
-    tbl = ax.table(
-        cellText=cell_text,
-        colLabels=col_labels,
-        cellLoc="center",
-        loc="center",
-        cellColours=row_colors,
-    )
-    tbl.auto_set_font_size(False)
-    tbl.set_fontsize(12)
-    tbl.scale(1, 1.6)
-
-    for j in range(len(col_labels)):
-        tbl[0, j].set_facecolor("#2c3e50")
-        tbl[0, j].set_text_props(color="white", fontweight="bold")
-
-    ax.set_title(
-        f"Repeated-CV XGBoost Surrogate Fidelity - {side.upper()} {name}",
-        fontsize=14,
-        fontweight="bold",
-        pad=16,
-    )
-
-    plt.tight_layout()
-
-    plots_side_dir = PLOTS_DIR / side
-    plots_side_dir.mkdir(parents=True, exist_ok=True)
-    out = plots_side_dir / f"{name}_xgb_surrogate_report.png"
-    plt.savefig(out, dpi=200, bbox_inches="tight")
-    plt.close()
-    print(f"[ok] {out}")
-
 
 ROLE_COLORS = {
     "AWPer": "#D55E00",
@@ -798,27 +893,28 @@ def plot_cluster_vs_ground_truth(
                 linewidth=0.75, s=120, zorder=5, label="IGL highlight", alpha = 0.6
             )
 
-        for _, row in plot_data.iterrows():
-            ax.annotate(
-                row["player_name"],
-                (row["pc1"], row["pc2"]),
-                fontsize=6, xytext=(3, 3), textcoords="offset points", zorder=4,
-            )
-
-        n_matched = int(plot_data["has_gt"].sum())
-        n_total = int(len(plot_data))
-        match_pct = n_matched / n_total if n_total else 0.0
         clean_suffix = " Clean" if clean else ""
 
         ax.set_xlabel("PC1")
         ax.set_ylabel("PC2")
         ax.set_title(
             f"PCA - Ground-Truth Roles vs Cluster Boundaries{clean_suffix}\n"
-            f"{side.upper()} {name}  ({n_matched}/{n_total} matched, {match_pct:.0%})"
+            f"{side.upper()} {name}"
         )
         ax.grid(True, alpha=0.3)
         ax.legend(title="GT Role", bbox_to_anchor=(1.02, 1), loc="upper left", borderaxespad=0, fontsize=8)
         plt.tight_layout()
+
+        labeled = labeled_player_keys()
+        to_label = [
+            (str(row["player_name"]), float(row["pc1"]), float(row["pc2"]))
+            for _, row in plot_data.iterrows()
+            if not labeled or _name_key(row["player_name"]) in labeled
+        ]
+        _annotate_without_overlap(
+            fig, ax, to_label,
+            points=plot_data[["pc1", "pc2"]].to_numpy(),
+        )
 
         suffix = "_clean" if clean else ""
         out = plots_side_dir / f"{name}_cluster_vs_gt{suffix}.png"
@@ -894,7 +990,6 @@ def evaluate_side(side: str, gt: pd.DataFrame | None) -> None:
     generated_plot_patterns = [
         "stability_tiers.png",
         "composite_scores.png",
-        "*_xgb_surrogate_report.png",
         "*_cluster_vs_gt.png",
         "*_cluster_vs_gt_clean.png",
         "*_pca.png",
@@ -904,7 +999,10 @@ def evaluate_side(side: str, gt: pd.DataFrame | None) -> None:
     ]
     for pattern in generated_plot_patterns:
         for path in side_plot_dir.glob(pattern):
-            path.unlink()
+            try:
+                path.unlink()
+            except PermissionError:
+                print(f"[warn] could not delete {path} (open in another program?) - overwriting instead")
 
     for cluster_path in sorted(cluster_files):
         name = cluster_path.stem.replace("_player_clusters", "")
@@ -1027,12 +1125,6 @@ def evaluate_side(side: str, gt: pd.DataFrame | None) -> None:
             df_plot = pd.read_csv(cluster_path)
             if gt is not None:
                 df_plot = match_ground_truth(df_plot, gt, side=side, mode="side")
-            plot_xgb_classification_report(
-                df_plot,
-                df_plot["cluster"].to_numpy(),
-                name,
-                side,
-            )
             plot_cluster_vs_ground_truth(
                 df_plot,
                 df_plot["cluster"].to_numpy(),

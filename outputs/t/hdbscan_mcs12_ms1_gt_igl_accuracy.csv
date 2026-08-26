@@ -1,0 +1,4 @@
+cluster,dominant_role,n_players,n_match,accuracy
+-1,Noise (unassigned),9,0,0.0
+0,Non-IGL,24,23,0.9583
+1,Non-IGL,95,74,0.7789

@@ -1,0 +1,4 @@
+cluster,dominant_role,n_players,n_match,accuracy
+-1,Noise (unassigned),9,0,0.0
+0,AWPer,24,23,0.9583
+1,Opener,95,29,0.3053

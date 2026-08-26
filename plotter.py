@@ -179,7 +179,7 @@ def plot_pca_scatter(players, method_name, output_dir):
     ax.set_xlabel("PC1")
     ax.set_ylabel("PC2")
 
-    ax.set_title(f"PCA Scatter — {method_name}")
+    ax.set_title(f"PCA Scatter: {method_name}")
 
     ax.grid(True, alpha=0.3)
 
@@ -280,7 +280,7 @@ def plot_radar(summary, method_name, output_dir):
         fig.delaxes(axes[j])
 
     fig.suptitle(
-        f"Cluster Profiles — {method_name}",
+        f"Cluster Profiles: {method_name}",
         fontsize=16,
     )
 
@@ -381,7 +381,7 @@ def plot_feature_importance_bar(
     ax.set_ylabel("Feature")
 
     ax.set_title(
-        f"Feature Importance — {method_name}\n"
+        f"Feature Importance: {method_name}\n"
         f"Top {top_n} discriminating features"
     )
 
@@ -567,7 +567,7 @@ def plot_zscore_heatmap(
     )
 
     ax.set_title(
-        f"Feature Z-scores by Cluster — {method_name}\n"
+        f"Feature Z-scores by Cluster: {method_name}\n"
         f"Top {MAX_FEATURES} features by discriminating power"
     )
 

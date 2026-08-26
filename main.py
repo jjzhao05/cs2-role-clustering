@@ -11,7 +11,6 @@ UNZIP_SCRIPT = PROJECT_DIR / "file_unzipper.py"
 PARSER_SCRIPT = PROJECT_DIR / "demo_parser.py"
 CLUSTER_SCRIPT = PROJECT_DIR / "cluster_players.py"
 EVALUATE_SCRIPT = PROJECT_DIR / "evaluate_clusters.py"
-LABEL_SCRIPT = PROJECT_DIR / "label_clusters.py"
 PLOT_SCRIPT = PROJECT_DIR / "plotter.py"
 ABLATION_SCRIPT = PROJECT_DIR / "run_ablations.py"
 
@@ -61,11 +60,6 @@ def main():
             "evaluate",
             "Evaluating clusters",
             lambda: run_script(EVALUATE_SCRIPT),
-        ),
-        (
-            "label",
-            "Generating surrogate labels",
-            lambda: run_script(LABEL_SCRIPT),
         ),
         (
             "plot",

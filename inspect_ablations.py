@@ -14,7 +14,7 @@ ABLATION_RESULTS_DIR = Path("outputs/ablations")
 OUTPUT_DIR = Path("outputs/ablations/cluster_inspection")
 PLOTS_DIR = Path("plots/ablations/cluster_inspection")
 
-RANDOM_STATE = 69420
+RANDOM_STATE = 101705
 
 
 def load_data() -> pd.DataFrame:
@@ -154,7 +154,7 @@ def plot_ablation_clusters(df: pd.DataFrame, side: str, ablation: str) -> None:
 
     ax.set_xlabel("PC1")
     ax.set_ylabel("PC2")
-    ax.set_title(f"{side.upper()} Ablated Clusters — {ablation}")
+    ax.set_title(f"{side.upper()} Ablated Clusters: {ablation}")
 
     ax.grid(True, alpha=0.3)
 

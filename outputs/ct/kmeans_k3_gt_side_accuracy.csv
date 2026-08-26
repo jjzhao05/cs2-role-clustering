@@ -1,4 +1,4 @@
 cluster,dominant_role,n_players,n_match,accuracy
-0,Rotator,52,45,0.8654
-1,Anchor,46,27,0.587
+0,Anchor,48,28,0.5833
+1,Rotator,55,47,0.8545
 2,AWPer,25,25,1.0
