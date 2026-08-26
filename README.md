@@ -118,19 +118,17 @@ On the CT side, removing trading or utility features has little effect on extern
 
 ## Limitations
 
-The final clustering dataset covers 214 players, which is small for unsupervised learning. The player pool is also restricted to top-tier professionals, creating a compressed skill distribution where role differences may be subtle and/or overlapping.
+The final clustering dataset covers 214 players, which is small for unsupervised learning and restricted to top-tier professionals, creating a compressed skill distribution where role differences may be subtle and/or overlapping.
 
-The external role annotations are expert reference labels, not absolute ground truth. CS2 roles vary by map, side, opponent, economy state, roster context, and team system. Some players also occupy multiple roles simultaneously, so disagreement between clusters and labels may reflect role overlap rather than model failure.
+The external role annotations are expert reference labels, not absolute ground truth. CS2 roles vary by map, side, opponent, economy state, roster context, and team system, and some players occupy multiple roles simultaneously.
 
-The current feature set averages behavior across maps. This improves player-level stability but removes tactical context, especially on CT side where anchoring, rotation, and site responsibility are highly map-dependent.
+The current feature set averages behavior across maps, which improves player-level stability but removes tactical context, especially on CT side where anchoring, rotation, and site responsibility are highly map-dependent.
 
-The model also has no access to voice communication, mid-round calls, set strategies, or intended tactical responsibilities. This is especially important for interpreting the IGL-enriched cluster, which should be treated as an indirect behavioral signal rather than direct proof of in-game leadership.
+The model also has no access to voice communication, mid-round calls, or set strategies, which is especially relevant for interpreting the IGL-enriched cluster as an indirect behavioral signal rather than direct proof of in-game leadership.
 
 ## Future Work
 
-Future extensions include map-stratified clustering, null-label baselines, tournament-level stability checks, and an interactive player similarity dashboard.
-
-The highest-priority next step is map-stratified analysis, which could preserve positional role structure that is currently averaged across maps.
+The highest-priority next step is map-stratified clustering, which could preserve positional role structure that is currently averaged across maps.
 
 
 
